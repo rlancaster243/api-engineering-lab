@@ -131,24 +131,24 @@ DELETE /v1/items/{id}
 
 ### Implementation work
 
-- [ ] Define the User and SavedItem tables with PK, FK, NOT NULL, unique constraints, and indices justified by query patterns.
-- [ ] Write Alembic migrations and a deterministic development-user seed.
-- [ ] Implement Pydantic request/response models, excluding caller-supplied ownership.
-- [ ] Separate routing, business rules, and repository/persistence boundaries.
-- [ ] Implement CRUD with explicit transaction boundaries and integrity-error handling.
-- [ ] Define pagination and deterministic ordering.
-- [ ] Define stable timestamp semantics and update behavior.
-- [ ] Verify persistence across application restart and clean database reconstruction.
+- [x] Define the User and SavedItem tables with PK, FK, NOT NULL, unique constraints, and indices justified by query patterns.
+- [x] Write Alembic migrations and a deterministic development-user seed.
+- [x] Implement Pydantic request/response models, excluding caller-supplied ownership.
+- [x] Separate routing, business rules, and repository/persistence boundaries.
+- [x] Implement CRUD with explicit transaction boundaries and integrity-error handling.
+- [x] Define pagination and deterministic ordering.
+- [x] Define stable timestamp semantics and update behavior.
+- [x] Verify persistence across application restart and clean database reconstruction.
 
 ### Tests
 
-- [ ] Create/read/update/delete success
-- [ ] Missing resource and invalid input
-- [ ] Duplicate save rejected for one owner
-- [ ] Different owners can save the same content (database-level invariant)
-- [ ] Pagination boundaries and deterministic ordering
-- [ ] Failed transaction rolls back
-- [ ] Migration-up from a clean database
+- [x] Create/read/update/delete success
+- [x] Missing resource and invalid input
+- [x] Duplicate save rejected for one owner
+- [x] Different owners can save the same content (database-level invariant)
+- [x] Pagination boundaries and deterministic ordering
+- [x] Failed transaction rolls back
+- [x] Migration-up from a clean database
 
 **Gate:** An actual PostgreSQL integration test suite passes, not only mocks.
 
@@ -302,6 +302,6 @@ For every milestone save the PR/commit, commands or CI results, tests that prove
 - [x] Write or strengthen the health contract test.
 - [x] Verify GitHub Actions results and fix failures.
 - [x] Open a PR with test evidence.
-- [ ] Merge after required checks pass.
+- [x] Merge after required checks pass.
 
 **Exit condition:** Three verifiable engineering case studies, at least one substantial independently implemented API, reproducible tests and environment setup, and a defensible explanation of behavior, security, failure modes, and recovery.
