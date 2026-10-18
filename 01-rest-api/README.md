@@ -12,14 +12,24 @@ See [`../docs/API_ENGINEERING_SYLLABUS.md`](../docs/API_ENGINEERING_SYLLABUS.md)
 
 - Python 3.12+
 - FastAPI + Pydantic + Uvicorn
-- PostgreSQL via `DATABASE_URL` (introduced in Project 1A; not required for Milestone 0 `/health`)
-- Ruff (lint + format) and pytest (`TestClient`)
+- PostgreSQL via `DATABASE_URL` (SQLAlchemy URL, `postgresql+psycopg://...`)
+- Alembic migrations
+- Ruff (lint + format) and pytest (`TestClient` against PostgreSQL for `/v1/items`)
 
 ## Run locally
 
+Start Postgres (matches `.env.example`):
+
 ```bash
+docker compose up -d
 cp .env.example .env
+```
+
+Apply migrations and run the API:
+
+```bash
 uv sync --extra dev
+uv run alembic upgrade head
 uv run uvicorn app.main:app --reload --port 8001
 ```
 
@@ -27,35 +37,41 @@ Without uv:
 
 ```bash
 pip install -e ".[dev]"
+alembic upgrade head
 uvicorn app.main:app --reload --port 8001
 ```
 
-Health check:
+`GET /health` proves process responsiveness only. It does not connect to PostgreSQL.
 
 ```bash
 curl -i http://127.0.0.1:8001/health
 ```
 
-Expected response: `200 OK` with body `{"status":"ok"}`. Note: `/health` proves **process responsiveness** only, not PostgreSQL or external dependency readiness.
+Saved items (owner is the seeded development user; the API does not accept `user_id`):
+
+```bash
+curl -s -X POST http://127.0.0.1:8001/v1/items \
+  -H 'content-type: application/json' \
+  -d '{"content_id":"verse-1","notes":"first"}'
+
+curl -s http://127.0.0.1:8001/v1/items
+```
 
 ## Lint and test
 
+Item tests use `DATABASE_URL`. With Postgres from compose:
+
 ```bash
+export DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost:5432/rest_api_lab
 uv run ruff check .
 uv run ruff format --check .
 uv run pytest -q
 ```
 
-Without uv:
-
-```bash
-ruff check .
-ruff format --check .
-pytest -q
-```
+If `DATABASE_URL` is unset, Postgres integration tests skip and the health tests still run. CI for this project always sets `DATABASE_URL`.
 
 ## Environment
 
 | Variable | Default (local) | Purpose |
 |----------|-----------------|--------|
-| `DATABASE_URL` | `postgresql://postgres:postgres@localhost:5432/rest_api_lab` | PostgreSQL connection string for Project 1A+ |
+| `DATABASE_URL` | `postgresql+psycopg://postgres:postgres@localhost:5432/rest_api_lab` | SQLAlchemy connection string for `/v1/items` |
