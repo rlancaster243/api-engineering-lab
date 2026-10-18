@@ -1,7 +1,7 @@
 # API Engineering Lab — Action Syllabus
 
 **Version:** 1.0  
-**Status:** Proposed implementation plan (not evidence of completion)  
+**Status:** Active implementation plan  
 **Repository:** [rlancaster243/api-engineering-lab](https://github.com/rlancaster243/api-engineering-lab)  
 **Visibility:** Private  
 **Primary stack:** Python 3.12+, FastAPI, PostgreSQL, SQLAlchemy, Alembic, Pydantic, pytest, GitHub Actions  
@@ -27,7 +27,7 @@ Prior architectural exposure to FastAPI, prior work, and prior systems is releva
 
 ## 2. Confirmed repository baseline and intended structure
 
-The repository currently has a `main` default branch, a root `README.md`, `.gitignore`, `.github/`, `docs/`, and three numbered project directories. The README describes independently runnable services with their own dependencies, tests, and documentation. This syllabus preserves that structure and **does not claim application implementations or passing tests already exist**.
+The repository has a `main` default branch, a root `README.md`, `.gitignore`, `.github/`, `docs/`, and three numbered project directories. Each directory is an independently runnable FastAPI service with its own dependencies, tests, and documentation.
 
 ```text
 api-engineering-lab/
@@ -44,9 +44,9 @@ api-engineering-lab/
 └── README.md
 ```
 
-**Branch policy [PROPOSED]:** `main` is authoritative; implement changes on short-lived `feature/*` or `fix/*` branches, validate with pull-request CI, then merge. A staging **environment** may be introduced later without adding a permanent staging **branch**.
+**Branch policy:** `main` is authoritative; implement changes on short-lived `feature/*` or `fix/*` branches, validate with pull-request CI, then merge. A staging **environment** may be introduced later without adding a permanent staging **branch**.
 
-**Documentation alignment [OPEN]:** The existing root README lists hardening/authentication together under Phase 3. This plan puts **ownership enforcement and authentication in Project 1B**, before the asynchronous job project. Reconcile the README when Project 1 work begins; no existing README changes are implied by this syllabus commit.
+**Documentation alignment [RESOLVED]:** Root `README.md` and `01-rest-api/README.md` have been aligned with this syllabus so ownership enforcement and authentication live in **Project 1B** (`01-rest-api/`), prior to `02-async-job-api/`, and Phase 3 (`03-api-hardening/`) focuses on defect investigation and repair.
 
 ## 3. Project sequence
 
@@ -62,7 +62,7 @@ The sequence matters more than the calendar. Do not advance past a critical fail
 
 ## 4. Architecture decision ADR-001 — stable ownership grain
 
-**Status:** Proposed for adoption.
+**Status:** Accepted — recorded in [`docs/decisions/0002-saved-item-ownership-grain.md`](decisions/0002-saved-item-ownership-grain.md).
 
 **Decision:** One saved-item row represents **one user's saved reference to one piece of content**, from the first persistence milestone onward.
 
@@ -90,14 +90,14 @@ Demonstrate an independently runnable FastAPI application and an automated verif
 
 ### Tasks
 
-- [ ] Inspect the scaffold before editing; preserve existing modules and configuration.
-- [ ] Verify per-module Python dependencies and reproducible installation.
-- [ ] Implement `GET /health` in Project 1 (or verify and test an existing implementation).
-- [ ] Define response `200 OK` with `{"status":"ok"}`.
-- [ ] Write an HTTP-level pytest test for status and response body.
-- [ ] Configure lint and test commands.
-- [ ] Make GitHub Actions run those checks on pull requests.
-- [ ] Create and review a bounded PR with verification evidence.
+- [x] Inspect the scaffold before editing; preserve existing modules and configuration.
+- [x] Verify per-module Python dependencies and reproducible installation.
+- [x] Implement `GET /health` in Project 1 (or verify and test an existing implementation).
+- [x] Define response `200 OK` with `{"status":"ok"}`.
+- [x] Write an HTTP-level pytest test for status and response body.
+- [x] Configure lint and test commands.
+- [x] Make GitHub Actions run those checks on pull requests.
+- [x] Create and review a bounded PR with verification evidence.
 
 **Interpretation:** `/health` initially proves process responsiveness, not database or dependency readiness.
 
@@ -265,13 +265,13 @@ Candidate cases: misleading `200` on failure, missing access check, partial-stat
 
 | Decision | Status | Notes |
 |---|---|---|
-| ADR-001: stable `(user_id, content_id)` grain | Proposed for adoption | Model ownership in Project 1A; enforce in Project 1B |
-| ADR-002: trunk-based development | Proposed | Short-lived branches, PR validation |
+| ADR-001: stable `(user_id, content_id)` grain | Accepted (`0002-saved-item-ownership-grain.md`) | Model ownership in Project 1A; enforce in Project 1B |
+| ADR-002: trunk-based development | Accepted | Short-lived branches, PR validation |
 | ADR-003: PostgreSQL persistence | Proposed | Transactions, constraints, migrations |
 | ADR-004: authentication mechanism | OPEN | Choose and test before Project 1B |
 | ADR-005: PostgreSQL-backed job store | Proposed | Avoid premature broker |
 | ADR-006: idempotency/recovery guarantee | OPEN | Define limits around side effects |
-| README roadmap alignment | OPEN | README currently associates auth with Phase 3 |
+| README roadmap alignment | Resolved | Root README & `01-rest-api/README.md` aligned with Project 1A/1B/3 |
 | Exact Project 3 source code | OPEN | Must be independently owned or authorized |
 
 ## 14. Evidence register and interview qualification gates
@@ -295,13 +295,13 @@ For every milestone save the PR/commit, commands or CI results, tests that prove
 
 ## 15. Immediate backlog — next implementation action
 
-- [ ] Read current `README.md`, project directories, and CI configuration.
-- [ ] Align the README's phase ownership/auth wording with this syllabus.
-- [ ] Choose a small first feature branch, e.g. `feature/rest-api-foundation`.
-- [ ] Verify or implement the health endpoint.
-- [ ] Write or strengthen the health contract test.
-- [ ] Verify GitHub Actions results and fix failures.
-- [ ] Open a PR with test evidence.
+- [x] Read current `README.md`, project directories, and CI configuration.
+- [x] Align the README's phase ownership/auth wording with this syllabus.
+- [x] Choose a small first feature branch, e.g. `feature/rest-api-foundation`.
+- [x] Verify or implement the health endpoint.
+- [x] Write or strengthen the health contract test.
+- [x] Verify GitHub Actions results and fix failures.
+- [x] Open a PR with test evidence.
 - [ ] Merge after required checks pass.
 
 **Exit condition:** Three verifiable engineering case studies, at least one substantial independently implemented API, reproducible tests and environment setup, and a defensible explanation of behavior, security, failure modes, and recovery.
