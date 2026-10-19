@@ -19,9 +19,11 @@ See [`../docs/API_ENGINEERING_SYLLABUS.md`](../docs/API_ENGINEERING_SYLLABUS.md)
 
 ```bash
 cp .env.example .env
-uv sync --extra dev
+uv sync --locked --extra dev
 uv run uvicorn app.main:app --reload --port 8001
 ```
+
+`--locked` installs exactly what `uv.lock` records and fails if `pyproject.toml` has drifted from it. To change dependencies, edit `pyproject.toml`, run `uv lock`, and commit both files. See [ADR 0008](../docs/decisions/0008-execution-boundary.md).
 
 Without uv:
 
@@ -59,3 +61,12 @@ pytest -q
 | Variable | Default (local) | Purpose |
 |----------|-----------------|--------|
 | `DATABASE_URL` | `postgresql://postgres:postgres@localhost:5432/rest_api_lab` | PostgreSQL connection string for Project 1A+ |
+
+### Local PostgreSQL
+
+Any PostgreSQL 16 reachable at `DATABASE_URL` works. This matches the CI service container (credentials are throwaway, local use only):
+
+```bash
+docker run --rm -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=rest_api_lab -p 5432:5432 postgres:16
+psql "postgresql://postgres:postgres@localhost:5432/rest_api_lab" -c "select version()"
+```
