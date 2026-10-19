@@ -28,21 +28,21 @@ The five user-selected requirements are **finalized**:
 
 ### 1.1 Actual repository baseline [OBSERVED]
 
-A read of `main` before this specification found:
-- `01-rest-api/app/main.py`: FastAPI app and `GET /health`, returning `{"status":"ok","service":"01-rest-api"}`.
-- `01-rest-api/tests/test_health.py`: HTTP TestClient status/body assertions.
-- `01-rest-api/pyproject.toml`: FastAPI, Uvicorn, pytest, httpx.
-- `.github/workflows/ci.yml`: pytest matrix across three project directories.
-- `docs/decisions/0001-repo-layout.md`: accepted monorepo decision.
-- `docs/API_ENGINEERING_SYLLABUS.md`: governing eight-week action syllabus.
+A read of `main` at commit `36bc835` (Milestone 0 complete) found. This supersedes the earlier read at `ea08bd7`, which predates Milestone 0:
+- `01-rest-api/app/main.py`: FastAPI app and `GET /health`, returning `{"status":"ok"}` through a `HealthResponse` model.
+- `01-rest-api/tests/test_health.py`: HTTP TestClient assertions for `200` with a JSON body, and `405` for `POST /health`.
+- `01-rest-api/pyproject.toml`: runtime FastAPI and Uvicorn; dev pytest, httpx and Ruff (line length 100, rules `E,F,I,UP,B`).
+- `.github/workflows/ci.yml`: matrix across three project directories running `ruff check`, `ruff format --check` and pytest.
+- `docs/decisions/0001-repo-layout.md` and `docs/decisions/0002-saved-item-ownership-grain.md`: accepted decisions.
+- `docs/API_ENGINEERING_SYLLABUS.md`: governing eight-week action syllabus, status Active, Milestone 0 tasks checked; root and `01-rest-api` READMEs aligned with it.
 
-**[OPEN]** No tests or CI runs were executed as evidence during the design investigation. No persistence, CRUD, or auth implementation was found among the inspected Project 1 files. Reinspect the branch before implementation, as the repository may evolve.
+**[OPEN]** No tests or CI runs were executed as evidence during the design investigation; the check runs on this PR's head are the only execution evidence, and this document does not claim they pass. No persistence, CRUD, or auth implementation exists among the inspected Project 1 files. Reinspect the branch before implementation, as the repository may evolve.
 
 ### 1.2 Architecture states
 
 | State | Content |
 |---|---|
-| Current [OBSERVED] | Minimal FastAPI health application and test; CI workflow |
+| Current [OBSERVED] | Minimal FastAPI health application and test; Ruff + pytest CI workflow; accepted grain ADR (`0002`) |
 | Project 1A [PROPOSED] | Single development user, PostgreSQL schema, migration-backed saved-item CRUD |
 | Project 1B [PROPOSED] | Verified external principal and enforced owner-scoped CRUD |
 | Explicitly not claimed | Production deployability, passing integration tests, runtime correctness |
@@ -93,7 +93,7 @@ Client -- bearer token / JSON --> FastAPI HTTP adapter
 
 ## 3. Persistence schema
 
-### 3.1 Grain and key model [PROPOSED: P1-ADR-001]
+### 3.1 Grain and key model [ACCEPTED: P1-ADR-001 = `docs/decisions/0002-saved-item-ownership-grain.md`]
 
 A `saved_items` row means **a particular user saved a particular content reference**. Content may be saved by many users.
 
@@ -363,8 +363,8 @@ Repeated POST with identical owner/content returns `409`, **not** an upsert or r
 
 | PR | Work | Dependencies | Exit evidence |
 |---|---|---|---|
-| PR-00 | Verify existing scaffold, health route/test, dependencies, CI; add linting, repair baseline issues; fix CI per section 9 (job-level Postgres service for `01-rest-api` only, lockfile-keyed cache); **P1-ADR-007** | None | Commands documented, health test/CI green, ADR-007 accepted |
-| PR-01 | API schemas, OpenAPI/error contract including framework-error handlers, cursor format and signing; **P1-ADR-001, P1-ADR-002, P1-ADR-006** | PR-00 | Reviewed contract and contract tests, ADRs accepted |
+| PR-00 | Re-verify the Milestone 0 baseline (health route/test, Ruff, CI) with fresh CI evidence; fix CI per section 9 (job-level Postgres service for `01-rest-api` only, lockfile-keyed cache); **P1-ADR-007** | None | Commands documented, health test/CI green, ADR-007 accepted |
+| PR-01 | API schemas, OpenAPI/error contract including framework-error handlers, cursor format and signing; **P1-ADR-002, P1-ADR-006** (P1-ADR-001 is already accepted as `0002`) | PR-00 | Reviewed contract and contract tests, ADRs accepted |
 | PR-02 | SQLAlchemy models, Alembic, seed user, DB sessions and transactions; **P1-ADR-003** | PR-01 | Clean DB migration, constraints and rollback tests, direct-SQL rejection tests, ADR-003 accepted |
 | PR-03 | POST + GET by ID, uniqueness/concurrency handling, owner-scoped repository | PR-02 | 201/200/404/409 with PostgreSQL integration tests |
 | PR-04 | GET list, cursor pagination, PATCH, hard DELETE, conditional writes; **P1-ADR-005** | PR-03 | Pagination, metadata mutation, hard-delete tests, ADR-005 accepted |
@@ -422,15 +422,15 @@ Additional targeted edge cases to validate during implementation: invalid URLs, 
 
 ## 9. CI, execution evidence, and operational boundary
 
-Current scaffold CI runs pytest across project directories [OBSERVED], but results were not checked. Three constraints in `.github/workflows/ci.yml` [OBSERVED] must be fixed in PR-00 before the list below is achievable:
+Current CI runs `ruff check`, `ruff format --check` and pytest across the three project directories [OBSERVED at `36bc835`], but results were not checked by this document. Three constraints in `.github/workflows/ci.yml` [OBSERVED] must be fixed in PR-00 before the list below is achievable:
 
-- The commented `services:` stub (lines 41-48) sits under `steps`. `services` is a **job-level** key, so uncommenting it in place fails workflow validation.
+- The commented `services:` stub after the pytest step sits under `steps`. `services` is a **job-level** key, so uncommenting it in place fails workflow validation.
 - A `services:` block on the shared matrix job would start PostgreSQL for projects 02 and 03, which have no DB tests. Put the Postgres service on a dedicated `01-rest-api` job (or gate it per matrix entry).
 - `cache-dependency-path` points at `pyproject.toml` only, which cannot support the lockfile strategy in item 6. Key the cache on the lockfile once one exists.
 
 Extend Project 1 CI as needed for:
 
-1. Python lint/format checks.
+1. Python lint/format checks (Ruff, already present).
 2. Unit and HTTP contract tests.
 3. PostgreSQL-backed integration tests in an isolated service container.
 4. Alembic migration from a blank database.
@@ -477,13 +477,13 @@ These are **target gates**, not completed results.
 
 ## 11. ADR register and naming
 
-**[OBSERVED]** `docs/decisions/0001-repo-layout.md` already exists and is accepted. Do not overwrite its number/path.
+**[OBSERVED]** `docs/decisions/0001-repo-layout.md` and `docs/decisions/0002-saved-item-ownership-grain.md` already exist on `main` and are accepted. Do not overwrite their numbers/paths; new ADRs start at `0003`.
 
 **Naming and precedence.** This document's decisions use the `P1-ADR-NNN` prefix. A bare `ADR-NNN` refers to the decision register in `docs/API_ENGINEERING_SYLLABUS.md` (§13), where ADR-002 is trunk-based development, ADR-005 is the PostgreSQL job store and ADR-006 is the idempotency/recovery guarantee. Those do **not** mean what an unprefixed use of the same number might suggest here. In PRs and commit messages, cite the ADR **file number** (`0002`...`0008`), which is unique. Where the two registers describe the same decision (grain, persistence, authentication), the syllabus entry is the parent and the P1 ADR is the detailed record.
 
 | Logical decision | Syllabus register | Proposed new file | Owning PR | Status |
 |---|---|---|---|---|
-| P1-ADR-001 Stable owner/content grain | ADR-001 (same decision) | `0002-saved-item-grain.md` | PR-01 | Proposed |
+| P1-ADR-001 Stable owner/content grain | ADR-001 (same decision) | `0002-saved-item-ownership-grain.md` [OBSERVED] | done (`36bc835`) | Accepted |
 | P1-ADR-002 REST and duplicate behavior | none | `0003-http-contract.md` | PR-01 | Proposed |
 | P1-ADR-003 PostgreSQL + migrations | ADR-003 (same decision) | `0004-persistence.md` | PR-02 | Proposed |
 | P1-ADR-004 External token verification | ADR-004 (resolves its OPEN status) | `0005-external-identity.md` | PR-05 | Proposed |
@@ -491,7 +491,9 @@ These are **target gates**, not completed results.
 | P1-ADR-006 Keyset pagination | none (not syllabus ADR-006) | `0007-pagination.md` | PR-01 | Proposed |
 | P1-ADR-007 Local + CI execution | none | `0008-execution-boundary.md` | PR-00 | Proposed |
 
-Each ADR file is added by its owning PR (section 7). This document captures their intent without falsely presenting them as accepted.
+**Refinement of the accepted grain ADR [OPEN].** The grain, key and `UNIQUE(user_id, content_id)` invariant in `0002` are unchanged by this spec. This spec does refine its attribute table: `id` is fixed to UUID (the ADR allows "UUID or bigint"), and `title` and `url` are added (the ADR lists only `notes`). PR-01 must either amend `0002` or record the refinement in P1-ADR-002, so the accepted ADR and the schema do not diverge.
+
+Each remaining ADR file is added by its owning PR (section 7). This document captures their intent without falsely presenting them as accepted.
 
 ## 12. Open items and starting decision
 
@@ -499,7 +501,7 @@ Each ADR file is added by its owning PR (section 7). This document captures thei
 
 **[OPEN]** Decide the exact signed cursor serialization (field encoding, HMAC construction, settings name) in PR-01, because the pagination contract and P1-ADR-006 depend on it. The requirements are fixed in section 4.4: HMAC-signed, user- and sort-bound, microsecond precision.
 
-**[OPEN]** Reconcile root README's current placement of auth within the hardening phase against the finalized Project 1B auth scope; this is a documentation follow-up, not a reason to postpone persistence.
+**[RESOLVED]** README phase alignment: the root README and `01-rest-api/README.md` were aligned with the Project 1B auth scope in `36bc835` (syllabus §2).
 
 **[OPEN]** Verify CI status and runtime behavior, rather than interpreting the existence of code or a workflow file as successful execution.
 
