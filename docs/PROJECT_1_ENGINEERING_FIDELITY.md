@@ -489,7 +489,7 @@ These are **target gates**, not completed results.
 | P1-ADR-004 External token verification | ADR-004 (resolves its OPEN status) | `0005-external-identity.md` | PR-05 | Proposed |
 | P1-ADR-005 Hard deletion | none (not syllabus ADR-005) | `0006-hard-delete.md` | PR-04 | Proposed |
 | P1-ADR-006 Keyset pagination | none (not syllabus ADR-006) | `0007-pagination.md` | PR-01 | Proposed |
-| P1-ADR-007 Local + CI execution | none | `0008-execution-boundary.md` | PR-00 | Proposed |
+| P1-ADR-007 Local + CI execution | none | `0008-execution-boundary.md` | PR-00 | Accepted |
 
 **Refinement of the accepted grain ADR [OPEN].** The grain, key and `UNIQUE(user_id, content_id)` invariant in `0002` are unchanged by this spec. This spec does refine its attribute table: `id` is fixed to UUID (the ADR allows "UUID or bigint"), and `title` and `url` are added (the ADR lists only `notes`). PR-01 must either amend `0002` or record the refinement in P1-ADR-002, so the accepted ADR and the schema do not diverge.
 
