@@ -1,7 +1,7 @@
 # Project 1 — Saved Content API
 ## Engineering Fidelity Specification
 
-**Version:** 1.0  
+**Version:** 1.1 (post-review revision)  
 **Date:** 2026-10-16  
 **State:** Requirements finalized; implementation proposed; runtime unverified  
 **Repository:** [rlancaster243/api-engineering-lab](https://github.com/rlancaster243/api-engineering-lab)  
@@ -93,7 +93,7 @@ Client -- bearer token / JSON --> FastAPI HTTP adapter
 
 ## 3. Persistence schema
 
-### 3.1 Grain and key model [PROPOSED: ADR-001]
+### 3.1 Grain and key model [PROPOSED: P1-ADR-001]
 
 A `saved_items` row means **a particular user saved a particular content reference**. Content may be saved by many users.
 
@@ -122,6 +122,10 @@ CREATE TABLE users (
     )
 );
 
+-- UNIQUE (issuer, subject) treats NULLs as distinct, so it cannot constrain the
+-- local seed identity. This index allows at most one row with a NULL issuer.
+CREATE UNIQUE INDEX uq_users_local_seed ON users ((1)) WHERE issuer IS NULL;
+
 CREATE TABLE saved_items (
     id UUID PRIMARY KEY,
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
@@ -132,9 +136,16 @@ CREATE TABLE saved_items (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT uq_user_content UNIQUE (user_id, content_id),
-    CONSTRAINT ck_content_id_nonempty CHECK (length(btrim(content_id)) > 0),
+    -- Trim set E' \t\n\r\f\x0b' (space, tab, LF, CR, FF, VT) must equal the API trim set (section 4.2).
+    CONSTRAINT ck_content_id_normalized CHECK (
+        length(btrim(content_id, E' \t\n\r\f\x0b')) > 0
+        AND content_id = btrim(content_id, E' \t\n\r\f\x0b')
+    ),
     CONSTRAINT ck_title_nonempty CHECK (
-        title IS NULL OR length(btrim(title)) > 0
+        title IS NULL OR length(btrim(title, E' \t\n\r\f\x0b')) > 0
+    ),
+    CONSTRAINT ck_url_shape CHECK (
+        url IS NULL OR (length(url) <= 2048 AND url ~* '^https?://')
     ),
     CONSTRAINT ck_notes_length CHECK (notes IS NULL OR length(notes) <= 2000),
     CONSTRAINT ck_updated_after_created CHECK (updated_at >= created_at)
@@ -146,11 +157,11 @@ CREATE INDEX ix_saved_items_user_created_id
 
 **Schema fidelity notes:**
 - Generate UUIDs in the application with a cryptographically suitable generator.
-- Use timezone-aware UTC timestamps and assign `updated_at` on each successful mutation.
-- Normalize `content_id` consistently at the API boundary (trim surrounding whitespace; compare remaining text exactly, case-sensitive).
-- The database checks are defense in depth; Pydantic provides request validation.
-- The local seed user has null `issuer` and `subject` and exists only for single-user development mode. Only one such local seed identity should be configured by the lab, even though the nullable unique pair alone does not enforce singleton semantics.
-- For external principals, resolve the `(issuer, subject)` pair to an internal UUID. Use an atomic conflict-safe insert/select to handle two first requests concurrently.
+- **Single time source: the database.** `created_at` and `updated_at` both come from PostgreSQL `now()` (column default on INSERT, `updated_at = now()` inside the UPDATE statement on PATCH). The application never supplies timestamps, which removes app/DB clock skew as a cause of `ck_updated_after_created` violations. `now()` is transaction-start time, which matters for pagination (section 4.4). API timestamps are serialized as UTC.
+- Normalize `content_id` at the API boundary: strip the section 4.2 trim set, apply Unicode NFC, then compare exactly and case-sensitively. Without NFC, canonically equivalent strings would be distinct saved items. [OPEN] PostgreSQL 13+ with a UTF8 database can add `content_id IS NFC NORMALIZED` as a DB check; decide in PR-02.
+- The database checks are defense in depth and must accept exactly what the API accepts (same trim set, same length and URL limits). PR-02 includes tests that insert unnormalized values by direct SQL and expect rejection.
+- The local seed user has null `issuer` and `subject`, a fixed well-known UUID (`00000000-0000-0000-0000-000000000001`), and exists only for single-user development mode. `uq_users_local_seed` enforces at most one such row; seeding is idempotent (`ON CONFLICT DO NOTHING`) and dev-mode resolution looks the user up by that UUID, never by "the row with NULL issuer".
+- For external principals, resolve `(issuer, subject)` to an internal UUID with a single statement: `INSERT ... ON CONFLICT (issuer, subject) DO UPDATE SET issuer = EXCLUDED.issuer RETURNING id`. The no-op update makes the statement return the existing row, so a concurrent first request cannot get an empty result. Do not use `DO NOTHING` followed by a separate SELECT.
 - `ON DELETE RESTRICT` deliberately prevents implicit cascading of saved items when a user row is deleted.
 
 ## 4. HTTP API contract
@@ -202,7 +213,7 @@ Resource response omits internal `user_id`. `201` must only be sent **after succ
 
 | Field | Rule |
 |---|---|
-| `content_id` | Required, trimmed, 1–255 characters, no blank value |
+| `content_id` | Required, trimmed, NFC-normalized, 1–255 characters after normalization, no blank value |
 | `title` | Optional, max 200 chars, if nonnull must not be blank after trim |
 | `url` | Optional valid HTTP(S) URL, max 2,048 chars |
 | `notes` | Optional, max 2,000 chars |
@@ -210,21 +221,37 @@ Resource response omits internal `user_id`. `201` must only be sent **after succ
 | `id` | Server-generated UUID; URL identifies existing resource |
 | `user_id` | Never accepted in create or patch |
 
-Content IDs are compared case-sensitively after trimming. Submitted URLs are passive metadata: **no server-side fetching or redirects**, avoiding SSRF as a side effect of save operations.
+**Trim set:** the API trims exactly space, tab, LF, CR, FF and VT (`str.strip(" \t\n\r\f\v")`, not Python's default Unicode-aware `strip()`), matching the database checks in section 3.2. Content IDs are compared case-sensitively after trimming and NFC normalization. Submitted URLs are passive metadata: **no server-side fetching or redirects**, avoiding SSRF as a side effect of save operations.
 
 ### 4.3 PATCH
 
 Only `title`, `url`, and `notes` are mutable:
-- Omitted field: leave unchanged.
-- Explicit null: clear a nullable value.
+- Omitted field: leave unchanged. Implementations must distinguish omitted from null (Pydantic v2 `model_fields_set`, or a sentinel).
+- Explicit null: clear the value. `title`, `url` and `notes` are all nullable; every resulting value must still satisfy the section 4.2 rules.
 - Valid non-null: replace.
-- Empty body: validation error.
-- `content_id`, `user_id`, `id`: forbidden.
-- Update `updated_at` on an actual successful mutation.
+- Body with no recognized field (`{}`): `422 VALIDATION_ERROR`. A non-empty body is always valid input, even if every value equals the stored value.
+- `content_id`, `user_id`, `id`: forbidden (unknown-field rejection).
+- **No-op PATCH** (all supplied values equal current state): `200` with the current resource; `updated_at` is unchanged. A real change sets `updated_at = now()`.
+- Implement as one owner-scoped `UPDATE ... SET updated_at = CASE WHEN (title, url, notes) IS DISTINCT FROM (:title, :url, :notes) THEN now() ELSE updated_at END ... WHERE id = :id AND user_id = :uid RETURNING *`. The row matches whenever the caller owns it, so zero returned rows always means `404`, never "nothing changed".
 
-### 4.4 Pagination [PROPOSED: ADR-006]
+### 4.4 Pagination [PROPOSED: P1-ADR-006]
 
-Keyset pagination sorted `created_at DESC, id DESC`; default `limit=25`, maximum `limit=100`. Cursor is opaque, validated, scoped to the authenticated user, and identifies the last returned ordering key. Query records **strictly after** that key. Malformed/manipulated cursor returns `400 INVALID_CURSOR`. Cursor signing or other integrity protection is recommended; test cross-user cursor reuse. Keyset traversal does **not** promise a consistent snapshot under concurrent writes/deletes.
+`GET /v1/items?limit=<int>&cursor=<opaque>`
+
+Response:
+
+```json
+{
+  "items": [ { "...": "resource as in 4.1" } ],
+  "next_cursor": "opaque-string-or-null"
+}
+```
+
+- Ordering: `created_at DESC, id DESC`. "After the cursor" means **later in that order**, i.e. `(created_at, id) < (:cursor_created_at, :cursor_id)` as a row-value comparison. Do not compose it from separate `<` and `>` terms.
+- `limit`: default 25, minimum 1, maximum 100. A non-integer or out-of-range value is rejected with `422 VALIDATION_ERROR` (no clamping). Fetch `limit + 1` rows to decide `next_cursor`; it is `null` when no further row exists.
+- Cursor: opaque, **HMAC-signed**, and bound to the authenticated user and the sort order. The signing key comes from trusted settings (startup fails if it is missing). The payload carries the last row's `created_at` at full microsecond precision (truncation skips or repeats rows with near-equal timestamps) and `id`. Any malformed, tampered, wrong-user or wrong-sort cursor returns `400 INVALID_CURSOR`. Key rotation is out of scope for Project 1.
+- Why 400 for a bad cursor but 422 for a bad `limit`: the cursor is an opaque token the server issued, so a bad one is a protocol error rather than a field-validation failure. Both use the section 4.5 envelope.
+- **Consistency limit:** traversal does not promise a snapshot under concurrent writes or deletes. Because `created_at` is transaction-start time, a long transaction can commit a row whose `created_at` sorts before a position the client has already passed; that row is not returned by the in-progress traversal (a later fresh traversal returns it). This is accepted for Project 1 and must appear in the ADR.
 
 ### 4.5 Errors and statuses
 
@@ -246,18 +273,23 @@ Response envelope:
 | Resource absent or inaccessible | 404 | `ITEM_NOT_FOUND` |
 | Missing credentials | 401 | `UNAUTHENTICATED` |
 | Invalid or expired credentials | 401 | `INVALID_TOKEN` |
-| Invalid JSON/body values | 422 | `VALIDATION_ERROR` |
+| Valid token lacking the required scope/permission (if the provider profile requires one) | 403 | `INSUFFICIENT_SCOPE` |
+| Invalid JSON, body, query-parameter or path-parameter values (including malformed item ID and bad `limit`) | 422 | `VALIDATION_ERROR` |
 | Bad pagination cursor | 400 | `INVALID_CURSOR` |
+| Unknown route | 404 | `ROUTE_NOT_FOUND` |
+| Wrong method for a known route | 405 | `METHOD_NOT_ALLOWED` |
 | Database unavailable | 503 | `SERVICE_UNAVAILABLE` |
 | Unexpected server error | 500 | `INTERNAL_ERROR` |
 
+**Uniform envelope is an implementation requirement, not a default.** FastAPI returns `{"detail": ...}` for validation, unknown-route and wrong-method errors, and echoes submitted input. The application must register handlers for `RequestValidationError` and Starlette `HTTPException` (which covers 404 and 405) that emit the envelope above with a `request_id`. Validation responses may include `details: [{"field", "rule"}]` but must not echo submitted values. Use `HTTPBearer(auto_error=False)` (or equivalent) so missing credentials map to `401 UNAUTHENTICATED` rather than a framework-default status. Every `401` carries `WWW-Authenticate: Bearer` (RFC 6750).
+
 Server errors must not disclose stack traces, SQL, secrets, raw JWTs, or internal exception details. Record trace/request identifier in structured logs.
 
-### 4.6 Hard deletion [PROPOSED: ADR-005]
+### 4.6 Hard deletion [PROPOSED: P1-ADR-005]
 
 `DELETE /v1/items/{id}` physically removes the owned row, returns `204` with no body. A repeat delete returns `404`; this is consistent with idempotent **intended effects** even if HTTP status differs. No restore endpoint. Deletion must be scoped atomically by item ID and owner.
 
-## 5. Authentication and authorization [PROPOSED: ADR-004]
+## 5. Authentication and authorization [PROPOSED: P1-ADR-004]
 
 Project 1B is an OAuth 2.0 resource server validating access tokens issued by a configured external OpenID Connect/OAuth provider. Do not build passwords, login forms, or refresh-token issuance.
 
@@ -289,14 +321,14 @@ WHERE id = :item_id
 
 Use owner conditions on UPDATE and DELETE as well. Unauthorized caller attempting another user's item receives **the same 404** as a nonexistent record, preventing existence disclosure.
 
-Use `401` for no/invalid authentication. Reserve `403` for explicitly forbidden actions where the policy intentionally reveals the access denial.
+Use `401` for no/invalid authentication. Reserve `403` for explicitly forbidden actions where the policy intentionally reveals the access denial; the only planned use is `INSUFFICIENT_SCOPE` for a valid token that lacks the scope the provider profile requires (decided at PR-05). Cross-owner item access stays `404`.
 
 ### 5.3 Single-user development mode safety
 
-- Project 1A injects a fixed seeded development owner without user-supplied identifiers.
-- This mode is only valid under explicit local/test configuration.
-- Fail closed rather than silently reverting to fixed identity if auth settings or token verification fail.
-- No public network deployment while this mode is active.
+- Project 1A injects the fixed seeded development owner (section 3.2) without user-supplied identifiers.
+- Two settings control this: `AUTH_MODE` (`external_jwt` or `local_dev`) and `APP_ENV`. **The default is `external_jwt`.** `local_dev` is accepted only when `APP_ENV` is `local` or `test`; any other combination fails application startup.
+- In `external_jwt` mode the seed user is unreachable: no code path may resolve it, including after a verifier or JWKS failure. Those failures return `401`/`503`, never the seed identity.
+- No public network deployment while `local_dev` is active.
 
 ## 6. Transactions, concurrency, and recovery
 
@@ -306,8 +338,8 @@ Use `401` for no/invalid authentication. Reserve `403` for explicitly forbidden 
 2. Validate and normalize request data.
 3. Begin PostgreSQL transaction.
 4. Insert saved item.
-5. Database uniqueness conflict → roll back → return `409`.
-6. Unexpected storage error → roll back → safely map to internal/unavailable response.
+5. Unique violation on `uq_user_content` (SQLSTATE `23505` **and** constraint name `uq_user_content`) → roll back → return `409 ITEM_ALREADY_SAVED`.
+6. Any other storage error → roll back → safely map to `500`/`503`. This includes FK violations (`23503`), CHECK violations (`23514`) and a primary-key collision (`23505` on the PK constraint). They must never produce `409`, because that would tell the client the content is already saved when it is not.
 7. Commit successfully.
 8. Only then return `201`.
 
@@ -331,15 +363,17 @@ Repeated POST with identical owner/content returns `409`, **not** an upsert or r
 
 | PR | Work | Dependencies | Exit evidence |
 |---|---|---|---|
-| PR-00 | Verify existing scaffold, health route/test, dependencies, CI; add linting, repair baseline issues | None | Commands documented, health test/CI green |
-| PR-01 | API schemas, OpenAPI/error contract, ADRs for grain, API semantics, pagination | PR-00 | Reviewed contract and contract tests |
-| PR-02 | SQLAlchemy models, Alembic, seed user, DB sessions and transactions | PR-01 | Clean DB migration, constraints and rollback tests |
+| PR-00 | Verify existing scaffold, health route/test, dependencies, CI; add linting, repair baseline issues; fix CI per section 9 (job-level Postgres service for `01-rest-api` only, lockfile-keyed cache); **P1-ADR-007** | None | Commands documented, health test/CI green, ADR-007 accepted |
+| PR-01 | API schemas, OpenAPI/error contract including framework-error handlers, cursor format and signing; **P1-ADR-001, P1-ADR-002, P1-ADR-006** | PR-00 | Reviewed contract and contract tests, ADRs accepted |
+| PR-02 | SQLAlchemy models, Alembic, seed user, DB sessions and transactions; **P1-ADR-003** | PR-01 | Clean DB migration, constraints and rollback tests, direct-SQL rejection tests, ADR-003 accepted |
 | PR-03 | POST + GET by ID, uniqueness/concurrency handling, owner-scoped repository | PR-02 | 201/200/404/409 with PostgreSQL integration tests |
-| PR-04 | GET list, cursor pagination, PATCH, hard DELETE, conditional writes | PR-03 | Pagination, metadata mutation, hard-delete tests |
-| PR-05 | External JWT validation dependency with CI issuer/JWKS test fixture | PR-04 | Valid and forged/expired/wrong-claims token tests |
+| PR-04 | GET list, cursor pagination, PATCH, hard DELETE, conditional writes; **P1-ADR-005** | PR-03 | Pagination, metadata mutation, hard-delete tests, ADR-005 accepted |
+| PR-05 | External JWT validation dependency with CI issuer/JWKS test fixture; **P1-ADR-004** | PR-04 | Valid and forged/expired/wrong-claims token tests, ADR-004 accepted |
 | PR-06 | Resolve internal users from trusted issuer/subject; full owner enforcement | PR-05 | Two-principal read/write/delete isolation tests |
 | PR-07 | DB failure mapping, request correlation, config validation and reproducibility | PR-06 | Failure-injection suite, clean local + CI setup |
 | PR-08 | Independent change/debug exercise, PR/code review evidence | PR-07 | Unaided bounded implementation and regression repair |
+
+**ADR ownership:** each ADR is written as Proposed and moved to Accepted in the PR listed above, as part of that PR's review. Gate A is evaluated against the ADRs owned by PR-00 to PR-01.
 
 **Progression:** Verify before advancing. Do not treat auth middleware as complete authorization until every item route and list query has isolation tests.
 
@@ -353,7 +387,7 @@ Repeated POST with identical owner/content returns `409`, **not** an upsert or r
 | F-004 | Concurrent duplicate create | Exactly one create; one 409 | P0 |
 | F-005 | Create fails before commit | No row remains | P0 |
 | F-006 | Item absent | 404 | P0 |
-| F-007 | Malformed ID | Validation error | P1 |
+| F-007 | Malformed ID | 422 `VALIDATION_ERROR` | P1 |
 | F-008 | Client injects user_id | Rejected | P0 |
 | F-009 | Cross-user GET | 404, no metadata disclosure | P0 |
 | F-010 | Cross-user PATCH | 404, no mutation | P0 |
@@ -364,21 +398,37 @@ Repeated POST with identical owner/content returns `409`, **not** an upsert or r
 | F-015 | Unknown signing key | Fail closed | P0 |
 | F-016 | Database unavailable | 503 and no false success | P0 |
 | F-017 | Delete then repeat delete | 204 then 404 | P1 |
-| F-018 | Empty PATCH | Validation error | P1 |
+| F-018 | Empty PATCH (`{}`) | 422 `VALIDATION_ERROR` | P1 |
 | F-019 | Equal timestamps in page order | UUID tiebreaker preserves ordering | P1 |
 | F-020 | Oversized fields | Reject without write | P1 |
-| F-021 | Altered pagination cursor | 400 | P1 |
+| F-021 | Malformed, tampered, wrong-user or wrong-sort pagination cursor | 400 `INVALID_CURSOR` | P1 |
 | F-022 | Missing JWT verifier config | Fail startup or refuse safely | P0 |
 | F-023 | Unexpected exception | 500 with sanitized response | P0 |
 | F-024 | Fresh database setup | Migration and tests pass | P0 |
+| F-025 | `AUTH_MODE=local_dev` with `APP_ENV` other than `local`/`test` | Startup refuses | P0 |
+| F-026 | `AUTH_MODE=external_jwt`: no token, or verifier/JWKS failure | 401/503; seed user never resolved | P0 |
+| F-027 | Two concurrent first requests from the same new `(issuer, subject)` | Both succeed with the same internal user id; one `users` row | P0 |
+| F-028 | FK, CHECK or PK violation during create | 500/422 path, never `409 ITEM_ALREADY_SAVED`; no row | P0 |
+| F-029 | No-op PATCH (values equal stored values) | 200 with current resource; `updated_at` unchanged | P1 |
+| F-030 | PATCH with omitted vs explicit-null fields | Omitted unchanged; null clears | P1 |
+| F-031 | Unknown route; wrong method on known route | 404 `ROUTE_NOT_FOUND` / 405 `METHOD_NOT_ALLOWED`, envelope with `request_id` | P1 |
+| F-032 | `limit` of 0, 101 or non-integer | 422 `VALIDATION_ERROR` | P1 |
+| F-033 | Direct SQL insert of tab-only or untrimmed `content_id`, over-long or non-HTTP(S) `url` | Rejected by DB checks | P1 |
+| F-034 | Second seed-user row (NULL issuer) inserted | Rejected by `uq_users_local_seed` | P1 |
 
 **P0** blocks the relevant stage's acceptance. **P1** is required before the whole Project 1 is accepted. Use actual PostgreSQL assertions for persistence properties; mocked HTTP responses alone are insufficient.
 
-Additional targeted edge cases to validate during implementation: PATCH omitted vs null values, invalid URLs, cursor used across users, simultaneous first-time principal creation, and successful commit vs client disconnect.
+Additional targeted edge cases to validate during implementation: invalid URLs, NFC-equivalent `content_id` values, and successful commit vs client disconnect.
 
 ## 9. CI, execution evidence, and operational boundary
 
-Current scaffold CI runs pytest across project directories [OBSERVED], but results were not checked. Extend Project 1 CI as needed for:
+Current scaffold CI runs pytest across project directories [OBSERVED], but results were not checked. Three constraints in `.github/workflows/ci.yml` [OBSERVED] must be fixed in PR-00 before the list below is achievable:
+
+- The commented `services:` stub (lines 41-48) sits under `steps`. `services` is a **job-level** key, so uncommenting it in place fails workflow validation.
+- A `services:` block on the shared matrix job would start PostgreSQL for projects 02 and 03, which have no DB tests. Put the Postgres service on a dedicated `01-rest-api` job (or gate it per matrix entry).
+- `cache-dependency-path` points at `pyproject.toml` only, which cannot support the lockfile strategy in item 6. Key the cache on the lockfile once one exists.
+
+Extend Project 1 CI as needed for:
 
 1. Python lint/format checks.
 2. Unit and HTTP contract tests.
@@ -400,6 +450,7 @@ No public deployment is part of acceptance. Demonstrate local startup, configura
 - [ ] OpenAPI contracts and request/response validation match the specification.
 - [ ] Grain, resource identity, and uniqueness are in approved ADRs.
 - [ ] Error cases have documented status codes and machine-readable error codes.
+- [ ] Every error response, including framework-generated validation, 404 and 405 errors, uses the section 4.5 envelope with `request_id` (F-007, F-018, F-031, F-032).
 
 ### Gate B — Persistence correctness
 - [ ] Alembic works from a fresh database.
@@ -409,7 +460,8 @@ No public deployment is part of acceptance. Demonstrate local startup, configura
 ### Gate C — Security correctness
 - [ ] Invalid, forged, and mistargeted tokens are rejected.
 - [ ] Two users cannot access or mutate each other's records.
-- [ ] Fixed-user shortcut cannot act as auth fallback outside local mode.
+- [ ] Fixed-user shortcut cannot act as auth fallback outside local mode (F-025, F-026).
+- [ ] Concurrent first-time principal creation yields one user (F-027).
 
 ### Gate D — Operational verification
 - [ ] Local and CI PostgreSQL tests pass.
@@ -427,23 +479,25 @@ These are **target gates**, not completed results.
 
 **[OBSERVED]** `docs/decisions/0001-repo-layout.md` already exists and is accepted. Do not overwrite its number/path.
 
-| Logical decision | Proposed new file | Status |
-|---|---|---|
-| ADR-001 Stable owner/content grain | `0002-saved-item-grain.md` | Proposed |
-| ADR-002 REST and duplicate behavior | `0003-http-contract.md` | Proposed |
-| ADR-003 PostgreSQL + migrations | `0004-persistence.md` | Proposed |
-| ADR-004 External token verification | `0005-external-identity.md` | Proposed |
-| ADR-005 Hard deletion | `0006-hard-delete.md` | Proposed |
-| ADR-006 Keyset pagination | `0007-pagination.md` | Proposed |
-| ADR-007 Local + CI execution | `0008-execution-boundary.md` | Proposed |
+**Naming and precedence.** This document's decisions use the `P1-ADR-NNN` prefix. A bare `ADR-NNN` refers to the decision register in `docs/API_ENGINEERING_SYLLABUS.md` (§13), where ADR-002 is trunk-based development, ADR-005 is the PostgreSQL job store and ADR-006 is the idempotency/recovery guarantee. Those do **not** mean what an unprefixed use of the same number might suggest here. In PRs and commit messages, cite the ADR **file number** (`0002`...`0008`), which is unique. Where the two registers describe the same decision (grain, persistence, authentication), the syllabus entry is the parent and the P1 ADR is the detailed record.
 
-The PR packages may add these as separate ADR files when the implementation work begins. This document captures their intent without falsely presenting them as accepted.
+| Logical decision | Syllabus register | Proposed new file | Owning PR | Status |
+|---|---|---|---|---|
+| P1-ADR-001 Stable owner/content grain | ADR-001 (same decision) | `0002-saved-item-grain.md` | PR-01 | Proposed |
+| P1-ADR-002 REST and duplicate behavior | none | `0003-http-contract.md` | PR-01 | Proposed |
+| P1-ADR-003 PostgreSQL + migrations | ADR-003 (same decision) | `0004-persistence.md` | PR-02 | Proposed |
+| P1-ADR-004 External token verification | ADR-004 (resolves its OPEN status) | `0005-external-identity.md` | PR-05 | Proposed |
+| P1-ADR-005 Hard deletion | none (not syllabus ADR-005) | `0006-hard-delete.md` | PR-04 | Proposed |
+| P1-ADR-006 Keyset pagination | none (not syllabus ADR-006) | `0007-pagination.md` | PR-01 | Proposed |
+| P1-ADR-007 Local + CI execution | none | `0008-execution-boundary.md` | PR-00 | Proposed |
+
+Each ADR file is added by its owning PR (section 7). This document captures their intent without falsely presenting them as accepted.
 
 ## 12. Open items and starting decision
 
 **[OPEN]** Select an actual external provider and validate issuer, token audience, JWKS behavior, and provider-specific access-token claims at PR-05. This does not block PR-00–PR-04.
 
-**[OPEN]** Decide exact signed cursor serialization before PR-04, consistent with owner-scoped keyset semantics.
+**[OPEN]** Decide the exact signed cursor serialization (field encoding, HMAC construction, settings name) in PR-01, because the pagination contract and P1-ADR-006 depend on it. The requirements are fixed in section 4.4: HMAC-signed, user- and sort-bound, microsecond precision.
 
 **[OPEN]** Reconcile root README's current placement of auth within the hardening phase against the finalized Project 1B auth scope; this is a documentation follow-up, not a reason to postpone persistence.
 
