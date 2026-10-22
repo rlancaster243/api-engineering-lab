@@ -61,6 +61,7 @@ pytest -q
 | Variable | Default (local) | Purpose |
 |----------|-----------------|--------|
 | `DATABASE_URL` | `postgresql://postgres:postgres@localhost:5432/rest_api_lab` | PostgreSQL connection string for Project 1A+ |
+| `CURSOR_SIGNING_KEY` | none (generate your own, 32+ bytes) | HMAC key for pagination cursors ([ADR 0007](../docs/decisions/0007-pagination.md)); not read until the list route lands in PR-04 |
 
 ### Local PostgreSQL
 
