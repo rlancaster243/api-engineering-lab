@@ -1,42 +1,24 @@
 from collections.abc import Generator
 
+from fastapi import Request
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.config import require_database_url
 
-_engine: Engine | None = None
-_session_factory: sessionmaker[Session] | None = None
-
-
-def get_engine() -> Engine:
-    global _engine
-    if _engine is None:
-        _engine = create_engine(require_database_url(), pool_pre_ping=True)
-    return _engine
+def create_db_engine(database_url: str) -> Engine:
+    # pool_pre_ping replaces connections the server has dropped instead of failing
+    # the first request that draws one.
+    return create_engine(database_url, pool_pre_ping=True)
 
 
-def get_session_factory() -> sessionmaker[Session]:
-    global _session_factory
-    if _session_factory is None:
-        _session_factory = sessionmaker(bind=get_engine(), autoflush=False, autocommit=False)
-    return _session_factory
+def create_session_factory(engine: Engine) -> sessionmaker[Session]:
+    return sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 
-def reset_engine() -> None:
-    global _engine, _session_factory
-    if _engine is not None:
-        _engine.dispose()
-    _engine = None
-    _session_factory = None
-
-
-def get_db() -> Generator[Session, None, None]:
-    session = get_session_factory()()
+def get_session(request: Request) -> Generator[Session, None, None]:
+    """One session per request. Closing rolls back anything left uncommitted."""
+    session = request.app.state.session_factory()
     try:
         yield session
-    except Exception:
-        session.rollback()
-        raise
     finally:
         session.close()

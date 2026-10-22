@@ -9,16 +9,23 @@ from alembic import context
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from app.config import sqlalchemy_url  # noqa: E402
 from app.models import Base  # noqa: E402
 
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # Keep application loggers enabled when migrations run in-process (tests, startup).
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
-database_url = os.environ.get("DATABASE_URL")
-if database_url:
+# An explicit URL (tests set one) wins; otherwise DATABASE_URL is required, so a
+# migration can never run against the alembic.ini placeholder.
+if config.get_main_option("sqlalchemy.url", "").startswith("driver://"):
+    database_url = os.environ.get("DATABASE_URL", "").strip()
+    if not database_url:
+        raise RuntimeError("DATABASE_URL is required to run migrations")
     config.set_main_option("sqlalchemy.url", database_url)
+config.set_main_option("sqlalchemy.url", sqlalchemy_url(config.get_main_option("sqlalchemy.url")))
 
 target_metadata = Base.metadata
 
