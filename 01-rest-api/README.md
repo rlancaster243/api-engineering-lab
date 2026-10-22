@@ -12,66 +12,62 @@ See [`../docs/API_ENGINEERING_SYLLABUS.md`](../docs/API_ENGINEERING_SYLLABUS.md)
 
 - Python 3.12+
 - FastAPI + Pydantic + Uvicorn
-- PostgreSQL via `DATABASE_URL` (SQLAlchemy URL, `postgresql+psycopg://...`)
-- Alembic migrations
-- Ruff (lint + format) and pytest (`TestClient` against PostgreSQL for `/v1/items`)
+- PostgreSQL via `DATABASE_URL` (introduced in Project 1A; not required for Milestone 0 `/health`)
+- Ruff (lint + format) and pytest (`TestClient`)
 
 ## Run locally
 
-Start Postgres (matches `.env.example`):
-
 ```bash
-docker compose up -d
 cp .env.example .env
-```
-
-Apply migrations and run the API:
-
-```bash
-uv sync --extra dev
-uv run alembic upgrade head
+uv sync --locked --extra dev
 uv run uvicorn app.main:app --reload --port 8001
 ```
+
+`--locked` installs exactly what `uv.lock` records and fails if `pyproject.toml` has drifted from it. To change dependencies, edit `pyproject.toml`, run `uv lock`, and commit both files. See [ADR 0008](../docs/decisions/0008-execution-boundary.md).
 
 Without uv:
 
 ```bash
 pip install -e ".[dev]"
-alembic upgrade head
 uvicorn app.main:app --reload --port 8001
 ```
 
-`GET /health` proves process responsiveness only. It does not connect to PostgreSQL.
+Health check:
 
 ```bash
 curl -i http://127.0.0.1:8001/health
 ```
 
-Saved items (owner is the seeded development user; the API does not accept `user_id`):
-
-```bash
-curl -s -X POST http://127.0.0.1:8001/v1/items \
-  -H 'content-type: application/json' \
-  -d '{"content_id":"verse-1","notes":"first"}'
-
-curl -s http://127.0.0.1:8001/v1/items
-```
+Expected response: `200 OK` with body `{"status":"ok"}`. Note: `/health` proves **process responsiveness** only, not PostgreSQL or external dependency readiness.
 
 ## Lint and test
 
-Item tests use `DATABASE_URL`. With Postgres from compose:
-
 ```bash
-export DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost:5432/rest_api_lab
 uv run ruff check .
 uv run ruff format --check .
 uv run pytest -q
 ```
 
-If `DATABASE_URL` is unset, Postgres integration tests skip and the health tests still run. CI for this project always sets `DATABASE_URL`.
+Without uv:
+
+```bash
+ruff check .
+ruff format --check .
+pytest -q
+```
 
 ## Environment
 
 | Variable | Default (local) | Purpose |
 |----------|-----------------|--------|
-| `DATABASE_URL` | `postgresql+psycopg://postgres:postgres@localhost:5432/rest_api_lab` | SQLAlchemy connection string for `/v1/items` |
+| `DATABASE_URL` | `postgresql://postgres:postgres@localhost:5432/rest_api_lab` | PostgreSQL connection string for Project 1A+ |
+| `CURSOR_SIGNING_KEY` | none (generate your own, 32+ bytes) | HMAC key for pagination cursors ([ADR 0007](../docs/decisions/0007-pagination.md)); not read until the list route lands in PR-04 |
+
+### Local PostgreSQL
+
+Any PostgreSQL 16 reachable at `DATABASE_URL` works. This matches the CI service container (credentials are throwaway, local use only):
+
+```bash
+docker run --rm -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=rest_api_lab -p 5432:5432 postgres:16
+psql "postgresql://postgres:postgres@localhost:5432/rest_api_lab" -c "select version()"
+```

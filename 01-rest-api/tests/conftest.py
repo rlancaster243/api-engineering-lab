@@ -1,71 +1,76 @@
-import os
-from collections.abc import Generator
-from pathlib import Path
+"""Test-only stub app that mounts the real schemas and error handlers.
+
+PR-01 ships the contract (schemas, error envelope, cursor) without real ``/v1/items``
+routes; those arrive with persistence in PR-03/PR-04. These stub routes exist only so the
+contract can be exercised over HTTP, and return canned data.
+"""
+
+import uuid
+from datetime import UTC, datetime
 
 import pytest
-from alembic.config import Config
+from fastapi import FastAPI, Response
+from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, text
-from sqlalchemy.engine import Engine
-from sqlalchemy.orm import Session, sessionmaker
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from alembic import command
-from app import db
-from app.main import app
+from app.errors import ApiError, ErrorCode, install_error_handling
+from app.schemas import (
+    DEFAULT_LIMIT,
+    ItemCreate,
+    ItemPage,
+    ItemPatch,
+    ItemResponse,
+    Limit,
+)
+
+_NOW = datetime(2026, 10, 16, 14, 0, tzinfo=UTC)
 
 
-def _database_url() -> str | None:
-    value = os.environ.get("DATABASE_URL")
-    if value is None or value.strip() == "":
+def build_contract_app() -> FastAPI:
+    app = FastAPI()
+    install_error_handling(app)
+
+    @app.post("/v1/items", status_code=201, response_model=ItemResponse)
+    def create_item(body: ItemCreate) -> ItemResponse:
+        return ItemResponse(id=uuid.uuid4(), created_at=_NOW, updated_at=_NOW, **body.model_dump())
+
+    @app.get("/v1/items", response_model=ItemPage)
+    def list_items(
+        response: Response, limit: Limit = DEFAULT_LIMIT, cursor: str | None = None
+    ) -> ItemPage:
+        response.headers["X-Applied-Limit"] = str(limit)
+        return ItemPage(items=[], next_cursor=None)
+
+    @app.get("/v1/items/{item_id}")
+    def get_item(item_id: uuid.UUID) -> dict[str, str]:
+        return {"id": str(item_id)}
+
+    @app.patch("/v1/items/{item_id}")
+    def patch_item(item_id: uuid.UUID, body: ItemPatch) -> JSONResponse:
+        return JSONResponse(body.changes())
+
+    @app.delete("/v1/items/{item_id}", status_code=204)
+    def delete_item(item_id: uuid.UUID) -> None:
         return None
-    return value
 
+    @app.get("/_raise/{code}")
+    def raise_api_error(code: ErrorCode) -> None:
+        raise ApiError(code)
 
-@pytest.fixture(scope="session")
-def database_url() -> str:
-    url = _database_url()
-    if url is None:
-        pytest.skip("DATABASE_URL is unset; skipping Postgres integration tests")
-    return url
+    @app.get("/_boom")
+    def boom() -> None:
+        raise RuntimeError("secret internal detail")
 
+    @app.get("/_http/{status}")
+    def raise_http(status: int) -> None:
+        raise StarletteHTTPException(status_code=status, detail="secret internal detail")
 
-@pytest.fixture(scope="session")
-def migrated_database(database_url: str) -> Generator[str, None, None]:
-    project_root = Path(__file__).resolve().parents[1]
-    config = Config(str(project_root / "alembic.ini"))
-    config.set_main_option("sqlalchemy.url", database_url)
-    command.upgrade(config, "head")
-    yield database_url
+    return app
 
 
 @pytest.fixture
-def db_engine(migrated_database: str) -> Generator[Engine, None, None]:
-    engine = create_engine(migrated_database, pool_pre_ping=True)
-    with engine.begin() as connection:
-        connection.execute(text("TRUNCATE users CASCADE"))
-        connection.execute(
-            text(
-                "INSERT INTO users (id, email) VALUES "
-                "('00000000-0000-4000-8000-000000000001', 'dev@localhost')"
-            )
-        )
-    yield engine
-    engine.dispose()
-
-
-@pytest.fixture
-def db_session(db_engine: Engine) -> Generator[Session, None, None]:
-    factory = sessionmaker(bind=db_engine, autoflush=False, autocommit=False)
-    session = factory()
-    try:
-        yield session
-    finally:
-        session.close()
-
-
-@pytest.fixture
-def client(db_engine: Engine) -> Generator[TestClient, None, None]:
-    db.reset_engine()
-    with TestClient(app) as test_client:
-        yield test_client
-    db.reset_engine()
+def client() -> TestClient:
+    # raise_server_exceptions=False so an unhandled exception is rendered by the
+    # installed handler, as a real server would, instead of re-raised into the test.
+    return TestClient(build_contract_app(), raise_server_exceptions=False)

@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+env:
+  UV_VERSION: "0.11.32"
+  UV_PYTHON: "3.12"
+
 jobs:
   test:
     name: lint & pytest — ${{ matrix.project }}
@@ -20,22 +24,6 @@ jobs:
     defaults:
       run:
         working-directory: ${{ matrix.project }}
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: rest_api_lab
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d rest_api_lab"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    env:
-      DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/rest_api_lab
     steps:
       - uses: actions/checkout@v4
 
@@ -43,18 +31,54 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
-          cache-dependency-path: ${{ matrix.project }}/pyproject.toml
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: ${{ matrix.project }}/uv.lock
+
+      # --locked fails if pyproject.toml and uv.lock disagree, so the installed
+      # dependency set is exactly the committed one.
+      - name: Install dependencies from lockfile
+        run: uv sync --locked --extra dev
 
       - name: Run Ruff lint & format check
         run: |
-          ruff check .
-          ruff format --check .
+          uv run ruff check .
+          uv run ruff format --check .
 
       - name: Run pytest
-        run: pytest -q
+        run: uv run pytest -q
+
+  # Isolated PostgreSQL service container for Project 1 only. Projects 02 and 03
+  # have no database tests, so they do not start one. `services` is a job-level
+  # key; it cannot live under `steps`.
+  # PLACEHOLDER: PR-02/PR-03 add Alembic and PostgreSQL integration tests to this
+  # job. Until then it only proves the service container starts and accepts
+  # connections at the documented DATABASE_URL.
+  postgres-01-rest-api:
+    name: postgres service — 01-rest-api
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: rest_api_lab
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d rest_api_lab"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # CI-only throwaway credentials for the ephemeral service container.
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/rest_api_lab
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify the database service accepts connections
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "select version()"
