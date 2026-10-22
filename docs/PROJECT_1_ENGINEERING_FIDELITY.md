@@ -491,7 +491,7 @@ These are **target gates**, not completed results.
 | P1-ADR-006 Keyset pagination | none (not syllabus ADR-006) | `0007-pagination.md` | PR-01 | Proposed |
 | P1-ADR-007 Local + CI execution | none | `0008-execution-boundary.md` | PR-00 | Accepted |
 
-**Refinement of the accepted grain ADR [OPEN].** The grain, key and `UNIQUE(user_id, content_id)` invariant in `0002` are unchanged by this spec. This spec does refine its attribute table: `id` is fixed to UUID (the ADR allows "UUID or bigint"), and `title` and `url` are added (the ADR lists only `notes`). PR-01 must either amend `0002` or record the refinement in P1-ADR-002, so the accepted ADR and the schema do not diverge.
+**Refinement of the accepted grain ADR [RESOLVED in PR-01].** The grain, key and `UNIQUE(user_id, content_id)` invariant in `0002` are unchanged by this spec. This spec does refine its attribute table: `id` is fixed to UUID (the ADR allows "UUID or bigint"), and `title` and `url` are added (the ADR lists only `notes`). The refinement is recorded in P1-ADR-002 (`0003-http-contract.md`); `0002` is left as accepted.
 
 Each remaining ADR file is added by its owning PR (section 7). This document captures their intent without falsely presenting them as accepted.
 
@@ -499,7 +499,7 @@ Each remaining ADR file is added by its owning PR (section 7). This document cap
 
 **[OPEN]** Select an actual external provider and validate issuer, token audience, JWKS behavior, and provider-specific access-token claims at PR-05. This does not block PR-00–PR-04.
 
-**[OPEN]** Decide the exact signed cursor serialization (field encoding, HMAC construction, settings name) in PR-01, because the pagination contract and P1-ADR-006 depend on it. The requirements are fixed in section 4.4: HMAC-signed, user- and sort-bound, microsecond precision.
+**[RESOLVED in PR-01]** Signed cursor serialization (field encoding, HMAC construction, settings name `CURSOR_SIGNING_KEY`) is specified in P1-ADR-006 (`0007-pagination.md`) and implemented in `01-rest-api/app/pagination.py`. Wiring the startup-fails-without-a-key check into the application remains for PR-04, where the list route first uses a cursor.
 
 **[RESOLVED]** README phase alignment: the root README and `01-rest-api/README.md` were aligned with the Project 1B auth scope in `36bc835` (syllabus §2).
 
