@@ -278,7 +278,7 @@ Response envelope:
 | Bad pagination cursor | 400 | `INVALID_CURSOR` |
 | Unknown route | 404 | `ROUTE_NOT_FOUND` |
 | Wrong method for a known route | 405 | `METHOD_NOT_ALLOWED` |
-| Database unavailable | 503 | `SERVICE_UNAVAILABLE` |
+| Database or signing keys unavailable | 503 | `SERVICE_UNAVAILABLE` |
 | Unexpected server error | 500 | `INTERNAL_ERROR` |
 
 **Uniform envelope is an implementation requirement, not a default.** FastAPI returns `{"detail": ...}` for validation, unknown-route and wrong-method errors, and echoes submitted input. The application must register handlers for `RequestValidationError` and Starlette `HTTPException` (which covers 404 and 405) that emit the envelope above with a `request_id`. Validation responses may include `details: [{"field", "rule"}]` but must not echo submitted values. Use `HTTPBearer(auto_error=False)` (or equivalent) so missing credentials map to `401 UNAUTHENTICATED` rather than a framework-default status. Every `401` carries `WWW-Authenticate: Bearer` (RFC 6750).
