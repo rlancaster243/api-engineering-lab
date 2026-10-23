@@ -52,15 +52,17 @@ jobs:
       - name: Run pytest
         run: uv run pytest -q
 
-  # Isolated PostgreSQL service container for Project 1 only. Projects 02 and 03
-  # have no database tests, so they do not start one. `services` is a job-level
-  # key; it cannot live under `steps`.
-  # PLACEHOLDER: PR-02/PR-03 add Alembic and PostgreSQL integration tests to this
-  # job. Until then it only proves the service container starts and accepts
-  # connections at the documented DATABASE_URL.
+  # PostgreSQL integration tests for Project 1 only. Projects 02 and 03 have no
+  # database tests, so they do not start one. `services` is a job-level key; it
+  # cannot live under `steps`. The matrix job above runs the same suite without a
+  # database, so its PostgreSQL tests skip there; this job sets REQUIRE_DATABASE=1,
+  # which turns any such skip into a failure.
   postgres-01-rest-api:
-    name: postgres service — 01-rest-api
+    name: postgres integration — 01-rest-api
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: 01-rest-api
     services:
       postgres:
         image: postgres:16
@@ -77,8 +79,28 @@ jobs:
     env:
       # CI-only throwaway credentials for the ephemeral service container.
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/rest_api_lab
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/rest_api_lab
+      REQUIRE_DATABASE: "1"
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify the database service accepts connections
-        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "select version()"
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: 01-rest-api/uv.lock
+
+      - name: Install dependencies from lockfile
+        run: uv sync --locked --extra dev
+
+      - name: Apply migrations to the empty service database
+        run: uv run alembic upgrade head
+
+      - name: Run pytest against PostgreSQL
+        run: uv run pytest -q

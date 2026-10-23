@@ -373,6 +373,8 @@ Repeated POST with identical owner/content returns `409`, **not** an upsert or r
 | PR-07 | DB failure mapping, request correlation, config validation and reproducibility | PR-06 | Failure-injection suite, clean local + CI setup |
 | PR-08 | Independent change/debug exercise, PR/code review evidence | PR-07 | Unaided bounded implementation and regression repair |
 
+**Delivery note [OBSERVED]:** PR-02, PR-03 and PR-04 were delivered together in GitHub PR #3, which began before this spec merged and was then brought into conformance with it. It carries P1-ADR-003 (`0004`) and P1-ADR-005 (`0006`).
+
 **ADR ownership:** each ADR is written as Proposed and moved to Accepted in the PR listed above, as part of that PR's review. Gate A is evaluated against the ADRs owned by PR-00 to PR-01.
 
 **Progression:** Verify before advancing. Do not treat auth middleware as complete authorization until every item route and list query has isolation tests.
