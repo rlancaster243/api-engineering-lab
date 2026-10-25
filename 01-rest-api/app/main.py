@@ -4,11 +4,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from pydantic import BaseModel
 
-from app.config import load_settings
+from app.config import AuthMode, load_settings
 from app.db import create_db_engine, create_session_factory
 from app.errors import install_error_handling
 from app.pagination import CursorCodec
 from app.routers.items import router as items_router
+from app.tokens import JwksKeySource, TokenVerifier
 
 
 class HealthResponse(BaseModel):
@@ -25,6 +26,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.settings = settings
     app.state.session_factory = create_session_factory(engine)
     app.state.cursor_codec = CursorCodec(settings.cursor_key)
+    # Keys are fetched lazily on the first token, never at startup, so a provider outage
+    # cannot stop the service from booting (and /health stays a liveness check).
+    if settings.auth_mode is AuthMode.EXTERNAL_JWT and settings.oidc is not None:
+        app.state.token_verifier = TokenVerifier(
+            settings.oidc,
+            JwksKeySource(settings.oidc.jwks_url, settings.oidc.jwks_cache_seconds),
+        )
+    else:
+        app.state.token_verifier = None
     try:
         yield
     finally:
