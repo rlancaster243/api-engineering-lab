@@ -210,7 +210,7 @@ def test_f026_a_valid_token_reaches_item_routes_after_pr06(
     from app.main import app
 
     _start_external_jwt(monkeypatch)
-    monkeypatch.setenv("TEST_DATABASE_URL", database_url)
+    monkeypatch.setenv("DATABASE_URL", database_url)
     with TestClient(app) as client:
         settings = app.state.settings
         app.state.token_verifier = TokenVerifier(settings.oidc, static_keys)
