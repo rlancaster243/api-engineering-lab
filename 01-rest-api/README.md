@@ -37,7 +37,7 @@ uv run uvicorn app.main:app --reload --port 8001
 
 `--locked` installs exactly what `uv.lock` records and fails if `pyproject.toml` has drifted from it. To change dependencies, edit `pyproject.toml`, run `uv lock`, and commit both files. See [ADR 0008](../docs/decisions/0008-execution-boundary.md).
 
-Startup fails closed when configuration is missing or unsafe: no `DATABASE_URL`, no or short `CURSOR_SIGNING_KEY`, or `AUTH_MODE=local_dev` outside `APP_ENV=local`/`test`.
+Startup fails closed when configuration is missing or unsafe: no `DATABASE_URL`, no or short `CURSOR_SIGNING_KEY`, missing or unsafe `OIDC_*` settings in `external_jwt` mode, or `AUTH_MODE=local_dev` outside `APP_ENV=local`/`test`.
 
 ```bash
 curl -i http://127.0.0.1:8001/health
@@ -69,8 +69,15 @@ Without `TEST_DATABASE_URL` the PostgreSQL tests skip and the contract tests sti
 | Variable | Default (local) | Purpose |
 |----------|-----------------|--------|
 | `DATABASE_URL` | `postgresql://postgres:postgres@localhost:5432/rest_api_lab` | Application and Alembic database. The plain `postgresql://` form is given the psycopg driver automatically, so the same URL works with `psql`. |
-| `AUTH_MODE` | `external_jwt` | `local_dev` serves requests as the seeded development owner; `external_jwt` rejects item requests until token verification (PR-05). |
+| `AUTH_MODE` | `external_jwt` | `local_dev` serves requests as the seeded development owner; `external_jwt` verifies bearer tokens and maps `(iss, sub)` to an internal user ([ADR 0005](../docs/decisions/0005-external-identity.md)). |
 | `APP_ENV` | none | Must be `local` or `test` for `AUTH_MODE=local_dev`. |
+| `OIDC_ISSUER` | none | Required with `external_jwt`. Expected `iss` claim ([ADR 0005](../docs/decisions/0005-external-identity.md)). |
+| `OIDC_AUDIENCE` | none | Required with `external_jwt`. Expected `aud` claim. |
+| `OIDC_JWKS_URL` | none | Required with `external_jwt`. `https://` URL of the provider's signing keys; fetched lazily, never at startup. |
+| `OIDC_ALGORITHMS` | `RS256` | Comma-separated allowlist from `RS256`, `PS256`, `ES256`. `HS*` and `none` fail startup. |
+| `OIDC_LEEWAY_SECONDS` | `30` | Clock-skew tolerance for `exp` and `nbf`, 0 to 120. |
+| `OIDC_JWKS_CACHE_SECONDS` | `300` | How long signing keys are trusted before refetch, 1 to 86400. Keys are never served past this. |
+| `OIDC_REQUIRED_SCOPE` | unset | Optional. When set, the token's `scope` or `scp` claim must contain it, else `403 INSUFFICIENT_SCOPE`. |
 | `CURSOR_SIGNING_KEY` | none (generate your own, 32+ bytes) | HMAC key for pagination cursors ([ADR 0007](../docs/decisions/0007-pagination.md)). Required at startup. |
 | `TEST_DATABASE_URL` | none | Disposable database for the PostgreSQL test suite. |
 | `REQUIRE_DATABASE` | unset | `1` makes the suite fail, not skip, without `TEST_DATABASE_URL`. |

@@ -12,13 +12,17 @@ Two kinds of test app:
 """
 
 import os
+import time
 import uuid
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
+import jwt
 import pytest
 from alembic.config import Config
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from fastapi import FastAPI, Response
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
@@ -26,7 +30,7 @@ from sqlalchemy import Engine, create_engine, text
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from alembic import command
-from app.config import sqlalchemy_url
+from app.config import OidcSettings, sqlalchemy_url
 from app.errors import ApiError, ErrorCode, install_error_handling
 from app.models import DEV_USER_ID
 from app.schemas import (
@@ -37,6 +41,7 @@ from app.schemas import (
     ItemResponse,
     Limit,
 )
+from app.tokens import InvalidToken, TokenVerifier
 
 _NOW = datetime(2026, 10, 16, 14, 0, tzinfo=UTC)
 
@@ -145,3 +150,113 @@ def api(
     # The context manager runs the lifespan, i.e. real startup and shutdown.
     with TestClient(app) as test_client:
         yield test_client
+
+
+# --- Token fixtures (no network, no real identity provider) -----------------------------
+
+OIDC_ISSUER = "https://issuer.test"
+OIDC_AUDIENCE = "rest-api-lab"
+OIDC_JWKS_URL = "https://issuer.test/.well-known/jwks.json"
+RSA_KID = "rsa-key-1"
+EC_KID = "ec-key-1"
+
+
+@pytest.fixture(scope="session")
+def rsa_key() -> rsa.RSAPrivateKey:
+    return rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+
+@pytest.fixture(scope="session")
+def ec_key() -> ec.EllipticCurvePrivateKey:
+    return ec.generate_private_key(ec.SECP256R1())
+
+
+class StaticKeySource:
+    """In-memory ``KeySource``: kid to public key; an unknown kid is an invalid token."""
+
+    def __init__(self, keys: dict[str, Any]) -> None:
+        self.keys = keys
+
+    def signing_key(self, kid: str) -> object:
+        try:
+            return self.keys[kid]
+        except KeyError:
+            raise InvalidToken("unknown signing key") from None
+
+
+@pytest.fixture
+def static_keys(rsa_key: rsa.RSAPrivateKey, ec_key: ec.EllipticCurvePrivateKey) -> StaticKeySource:
+    return StaticKeySource({RSA_KID: rsa_key.public_key(), EC_KID: ec_key.public_key()})
+
+
+@pytest.fixture
+def oidc_settings() -> OidcSettings:
+    return OidcSettings(
+        issuer=OIDC_ISSUER,
+        audience=OIDC_AUDIENCE,
+        jwks_url=OIDC_JWKS_URL,
+        algorithms=("RS256", "ES256"),
+        leeway_seconds=30,
+        jwks_cache_seconds=300,
+        required_scope=None,
+    )
+
+
+MintToken = Callable[..., str]
+
+
+@pytest.fixture
+def mint_token(rsa_key: rsa.RSAPrivateKey, ec_key: ec.EllipticCurvePrivateKey) -> MintToken:
+    """Build a signed token. A ``None`` value in ``claims`` or ``header`` removes the entry."""
+
+    def mint(
+        claims: dict[str, Any] | None = None,
+        header: dict[str, Any] | None = None,
+        *,
+        key: Any = None,
+        alg: str = "RS256",
+        kid: str | None = None,
+    ) -> str:
+        now = int(time.time())
+        payload: dict[str, Any] = {
+            "iss": OIDC_ISSUER,
+            "aud": OIDC_AUDIENCE,
+            "sub": "user-123",
+            "iat": now,
+            "exp": now + 300,
+        } | (claims or {})
+        payload = {k: v for k, v in payload.items() if v is not None}
+        if key is None:
+            key = ec_key if alg.startswith("ES") else rsa_key
+        headers = {"kid": kid or (EC_KID if alg.startswith("ES") else RSA_KID)} | (header or {})
+        headers = {k: v for k, v in headers.items() if v is not None}
+        # PyJWT leaves out "typ" when it is None; "JWT" is its default otherwise.
+        if "typ" not in (header or {}):
+            headers["typ"] = "JWT"
+        return jwt.encode(payload, key, algorithm=alg, headers=headers)
+
+    return mint
+
+
+@pytest.fixture
+def api_jwt(
+    clean_db: Engine,
+    database_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+    static_keys: StaticKeySource,
+    mint_token: MintToken,
+) -> Generator[tuple[TestClient, MintToken], None, None]:
+    """Real app in ``external_jwt`` with an in-memory key source (no network)."""
+    from app.main import app
+
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    monkeypatch.setenv("AUTH_MODE", "external_jwt")
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.setenv("CURSOR_SIGNING_KEY", TEST_CURSOR_KEY)
+    monkeypatch.setenv("OIDC_ISSUER", OIDC_ISSUER)
+    monkeypatch.setenv("OIDC_AUDIENCE", OIDC_AUDIENCE)
+    monkeypatch.setenv("OIDC_JWKS_URL", OIDC_JWKS_URL)
+    with TestClient(app) as test_client:
+        settings = test_client.app.state.settings
+        test_client.app.state.token_verifier = TokenVerifier(settings.oidc, static_keys)
+        yield test_client, mint_token
