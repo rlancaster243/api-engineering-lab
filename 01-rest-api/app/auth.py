@@ -4,22 +4,25 @@ Two steps, landed in two PRs so behavior stays fail-closed in between:
 
 - PR-05 (this module's ``current_principal``): verify the bearer access token and return
   the verified ``Principal``. Nothing maps a principal to a stored user yet.
-- PR-06: ``current_user_id`` will resolve the principal to a user row. Until then, in
-  ``AUTH_MODE=external_jwt`` (the default) every item request is rejected with 401, even
-  with a valid token: there is no path from a failed or absent credential, or from an
-  unmapped one, to the development owner.
+- PR-06: ``current_user_id`` resolves the verified principal to an internal user row via
+  ``UserRepository.resolve``. There is no path from a failed or absent credential to the
+  development owner in ``external_jwt`` mode.
 
 The seeded development owner exists only in ``AUTH_MODE=local_dev``.
 """
 
 import uuid
+from typing import Annotated
 
-from fastapi import Request
+from fastapi import Depends, Request
+from sqlalchemy.orm import Session
 
 from app.config import AuthMode, Settings
+from app.db import get_session
 from app.errors import ApiError, ErrorCode
 from app.models import DEV_USER_ID
 from app.tokens import InsufficientScope, InvalidToken, KeysUnavailable, Principal, TokenVerifier
+from app.users import UserRepository
 
 
 def _bearer_token(request: Request) -> str:
@@ -49,8 +52,12 @@ def current_principal(request: Request) -> Principal:
         raise ApiError(ErrorCode.INSUFFICIENT_SCOPE) from None
 
 
-def current_user_id(request: Request) -> uuid.UUID:
+def current_user_id(
+    request: Request,
+    session: Annotated[Session, Depends(get_session)],
+) -> uuid.UUID:
     settings: Settings = request.app.state.settings
     if settings.auth_mode is AuthMode.LOCAL_DEV:
         return DEV_USER_ID
-    raise ApiError(ErrorCode.UNAUTHENTICATED)
+    principal = current_principal(request)
+    return UserRepository(session).resolve(principal.issuer, principal.subject)

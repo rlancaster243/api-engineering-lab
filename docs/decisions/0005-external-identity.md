@@ -4,7 +4,7 @@ Logical ID: P1-ADR-004 in [`PROJECT_1_ENGINEERING_FIDELITY.md`](../PROJECT_1_ENG
 
 ## Status
 
-Proposed
+Accepted (verification PR-05; principal-to-user mapping PR-06)
 
 ## Context
 
@@ -30,7 +30,7 @@ Verification and identity mapping are separate concerns. This ADR covers verific
 6. **HTTP mapping** (spec §4.5): no, malformed or non-Bearer `Authorization` header is `401 UNAUTHENTICATED`; any verification failure is `401 INVALID_TOKEN`; unavailable keys are `503 SERVICE_UNAVAILABLE`; a missing scope is `403 INSUFFICIENT_SCOPE`. Every 401 carries `WWW-Authenticate: Bearer`. Unavailable keys are not 401 because the caller did nothing wrong and a retry may succeed.
 7. **No network at startup.** The service boots, and `/health` stays a liveness check, while the provider is down. Configuration errors still fail startup (F-022).
 8. **The raw token never appears** in an exception message, log line or response body.
-9. **Staging between PR-05 and PR-06.** `current_principal` exists and is tested, but `current_user_id` is unchanged: in `external_jwt` mode item routes still answer `401 UNAUTHENTICATED`, even for a valid token. Behavior on `main` therefore stays fail-closed until PR-06 maps principals to users. A test pins this and PR-06 will replace it.
+9. **Principal-to-user mapping (PR-06).** After verification, `UserRepository.resolve(issuer, subject)` returns the internal `users.id`. A SELECT runs first so routine reads do not write; a PostgreSQL upsert on `uq_external_identity` handles the first-request race. The seeded development user (`issuer` and `subject` both null) is never returned in `external_jwt` mode because verified tokens always carry non-null `iss` and `sub`.
 
 ## Consequences
 

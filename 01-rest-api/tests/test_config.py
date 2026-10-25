@@ -200,19 +200,22 @@ def test_f026_external_jwt_mode_never_resolves_the_seed_user(
             assert response.headers["WWW-Authenticate"] == "Bearer"
 
 
-def test_f026_a_valid_token_still_gets_401_until_pr06(
-    monkeypatch: pytest.MonkeyPatch, static_keys: StaticKeySource, mint_token: MintToken
+def test_f026_a_valid_token_reaches_item_routes_after_pr06(
+    monkeypatch: pytest.MonkeyPatch,
+    static_keys: StaticKeySource,
+    mint_token: MintToken,
+    clean_db: object,
+    database_url: str,
 ) -> None:
     from app.main import app
 
-    # PR-05 staging rule: verification exists, but nothing maps a principal to a user
-    # yet, so item routes stay closed even for a genuine token. PR-06 changes this test.
     _start_external_jwt(monkeypatch)
+    monkeypatch.setenv("TEST_DATABASE_URL", database_url)
     with TestClient(app) as client:
         settings = app.state.settings
         app.state.token_verifier = TokenVerifier(settings.oidc, static_keys)
         headers = {"Authorization": f"Bearer {mint_token()}"}
-        for method, path, body in ITEM_REQUESTS:
-            response = client.request(method, path, json=body, headers=headers)
-            assert response.status_code == 401
-            assert response.json()["error"]["code"] == "UNAUTHENTICATED"
+        response = client.post("/v1/items", json={"content_id": "jwt-created"}, headers=headers)
+        assert response.status_code == 201
+        item_id = response.json()["id"]
+        assert client.get(f"/v1/items/{item_id}", headers=headers).status_code == 200

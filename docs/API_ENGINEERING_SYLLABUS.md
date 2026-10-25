@@ -158,12 +158,12 @@ DELETE /v1/items/{id}
 
 Authentication proves caller identity; authorization enforces permitted actions; ownership identifies the saved-item principal. Keep these distinct.
 
-- [ ] Select and document a narrowly scoped authentication mechanism (ADR-004 remains open).
-- [ ] Resolve the principal from verified authentication context, never a request-body `user_id`.
-- [ ] Scope resource reads, updates, and deletes by both item identifier and authenticated user.
-- [ ] Enforce ownership on collection/list operations too.
-- [ ] Remove or fail closed on fixed-user fallback outside local development.
-- [ ] Test users A and B attempting cross-user read, update, delete, and enumeration.
+- [x] Select and document a narrowly scoped authentication mechanism ([ADR 0005](decisions/0005-external-identity.md); syllabus ADR-004).
+- [x] Resolve the principal from verified authentication context, never a request-body `user_id`.
+- [x] Scope resource reads, updates, and deletes by both item identifier and authenticated user.
+- [x] Enforce ownership on collection/list operations too.
+- [x] Remove or fail closed on fixed-user fallback outside local development.
+- [x] Test users A and B attempting cross-user read, update, delete, and enumeration.
 
 Policy: `401` for missing/invalid authentication, `404` for inaccessible item IDs when avoiding existence disclosure, and `403` for an explicit authenticated permission denial where disclosure is acceptable. Document precise behavior.
 
@@ -268,7 +268,7 @@ Candidate cases: misleading `200` on failure, missing access check, partial-stat
 | ADR-001: stable `(user_id, content_id)` grain | Accepted (`0002-saved-item-ownership-grain.md`) | Model ownership in Project 1A; enforce in Project 1B |
 | ADR-002: trunk-based development | Accepted | Short-lived branches, PR validation |
 | ADR-003: PostgreSQL persistence | Proposed | Transactions, constraints, migrations |
-| ADR-004: authentication mechanism | OPEN | Choose and test before Project 1B |
+| ADR-004: authentication mechanism | Accepted | [`0005-external-identity.md`](decisions/0005-external-identity.md) (OIDC Bearer access tokens) |
 | ADR-005: PostgreSQL-backed job store | Proposed | Avoid premature broker |
 | ADR-006: idempotency/recovery guarantee | OPEN | Define limits around side effects |
 | README roadmap alignment | Resolved | Root README & `01-rest-api/README.md` aligned with Project 1A/1B/3 |

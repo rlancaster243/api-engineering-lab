@@ -41,7 +41,7 @@ from app.schemas import (
     ItemResponse,
     Limit,
 )
-from app.tokens import InvalidToken
+from app.tokens import InvalidToken, TokenVerifier
 
 _NOW = datetime(2026, 10, 16, 14, 0, tzinfo=UTC)
 
@@ -236,3 +236,27 @@ def mint_token(rsa_key: rsa.RSAPrivateKey, ec_key: ec.EllipticCurvePrivateKey) -
         return jwt.encode(payload, key, algorithm=alg, headers=headers)
 
     return mint
+
+
+@pytest.fixture
+def api_jwt(
+    clean_db: Engine,
+    database_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+    static_keys: StaticKeySource,
+    mint_token: MintToken,
+) -> Generator[tuple[TestClient, MintToken], None, None]:
+    """Real app in ``external_jwt`` with an in-memory key source (no network)."""
+    from app.main import app
+
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    monkeypatch.setenv("AUTH_MODE", "external_jwt")
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.setenv("CURSOR_SIGNING_KEY", TEST_CURSOR_KEY)
+    monkeypatch.setenv("OIDC_ISSUER", OIDC_ISSUER)
+    monkeypatch.setenv("OIDC_AUDIENCE", OIDC_AUDIENCE)
+    monkeypatch.setenv("OIDC_JWKS_URL", OIDC_JWKS_URL)
+    with TestClient(app) as test_client:
+        settings = test_client.app.state.settings
+        test_client.app.state.token_verifier = TokenVerifier(settings.oidc, static_keys)
+        yield test_client, mint_token

@@ -69,7 +69,7 @@ Without `TEST_DATABASE_URL` the PostgreSQL tests skip and the contract tests sti
 | Variable | Default (local) | Purpose |
 |----------|-----------------|--------|
 | `DATABASE_URL` | `postgresql://postgres:postgres@localhost:5432/rest_api_lab` | Application and Alembic database. The plain `postgresql://` form is given the psycopg driver automatically, so the same URL works with `psql`. |
-| `AUTH_MODE` | `external_jwt` | `local_dev` serves requests as the seeded development owner; `external_jwt` verifies bearer tokens (below) but item requests are still rejected until principal resolution (PR-06). |
+| `AUTH_MODE` | `external_jwt` | `local_dev` serves requests as the seeded development owner; `external_jwt` verifies bearer tokens and maps `(iss, sub)` to an internal user ([ADR 0005](../docs/decisions/0005-external-identity.md)). |
 | `APP_ENV` | none | Must be `local` or `test` for `AUTH_MODE=local_dev`. |
 | `OIDC_ISSUER` | none | Required with `external_jwt`. Expected `iss` claim ([ADR 0005](../docs/decisions/0005-external-identity.md)). |
 | `OIDC_AUDIENCE` | none | Required with `external_jwt`. Expected `aud` claim. |

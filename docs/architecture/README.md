@@ -25,7 +25,7 @@ api-engineering-lab/
 
 ## Shared CI
 
-The root workflow installs dependencies and runs `pytest` in each directory. Database-backed tests can be added later with a Postgres service container; current smoke tests only hit `GET /health` and do not connect to Postgres.
+The root workflow runs Ruff and pytest in each project directory. For `01-rest-api`, a dedicated `postgres integration — 01-rest-api` job applies Alembic migrations and runs the full PostgreSQL suite (`TEST_DATABASE_URL`, `REQUIRE_DATABASE=1`). Projects `02` and `03` still exercise only their health smoke tests in the matrix job.
 
 ## Evolution
 
