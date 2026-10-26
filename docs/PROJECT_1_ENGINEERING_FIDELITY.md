@@ -496,7 +496,7 @@ Gate E is evidenced for Project 1 in PR-08; Gates A–D remain validated by earl
 
 **Refinement of the accepted grain ADR [RESOLVED in PR-01].** The grain, key and `UNIQUE(user_id, content_id)` invariant in `0002` are unchanged by this spec. This spec does refine its attribute table: `id` is fixed to UUID (the ADR allows "UUID or bigint"), and `title` and `url` are added (the ADR lists only `notes`). The refinement is recorded in P1-ADR-002 (`0003-http-contract.md`); `0002` is left as accepted.
 
-Each remaining ADR file is added by its owning PR (section 7). This document captures their intent without falsely presenting them as accepted.
+The ADR files in `docs/decisions/` are the records of each decision; this table is the index. ADRs 0003–0008 are Accepted.
 
 ## 12. Open items and starting decision
 
