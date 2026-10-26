@@ -52,11 +52,9 @@ jobs:
       - name: Run pytest
         run: uv run pytest -q
 
-  # PostgreSQL integration tests for Project 1 only. Projects 02 and 03 have no
-  # database tests, so they do not start one. `services` is a job-level key; it
-  # cannot live under `steps`. The matrix job above runs the same suite without a
-  # database, so its PostgreSQL tests skip there; this job sets REQUIRE_DATABASE=1,
-  # which turns any such skip into a failure.
+  # PostgreSQL integration tests for Projects 1 and 2. Project 03 has no database
+  # tests. The matrix job runs suites without a service DB; these jobs set
+  # REQUIRE_DATABASE=1 so skips become failures.
   postgres-01-rest-api:
     name: postgres integration — 01-rest-api
     runs-on: ubuntu-latest
@@ -95,6 +93,53 @@ jobs:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
           cache-dependency-glob: 01-rest-api/uv.lock
+
+      - name: Install dependencies from lockfile
+        run: uv sync --locked --extra dev
+
+      - name: Apply migrations to the empty service database
+        run: uv run alembic upgrade head
+
+      - name: Run pytest against PostgreSQL
+        run: uv run pytest -q
+
+  postgres-02-async-job-api:
+    name: postgres integration — 02-async-job-api
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: 02-async-job-api
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: async_job_api_lab
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d async_job_api_lab"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/async_job_api_lab
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/async_job_api_lab
+      REQUIRE_DATABASE: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: 02-async-job-api/uv.lock
 
       - name: Install dependencies from lockfile
         run: uv sync --locked --extra dev
