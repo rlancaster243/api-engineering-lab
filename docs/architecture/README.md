@@ -25,7 +25,7 @@ api-engineering-lab/
 
 ## Shared CI
 
-The root workflow runs Ruff and pytest in each project directory. For `01-rest-api`, a dedicated `postgres integration — 01-rest-api` job applies Alembic migrations and runs the full PostgreSQL suite (`TEST_DATABASE_URL`, `REQUIRE_DATABASE=1`). Projects `02` and `03` still exercise only their health smoke tests in the matrix job.
+The root workflow runs Ruff and pytest in each project directory. Dedicated postgres integration jobs run for `01-rest-api` and `02-async-job-api` (`TEST_DATABASE_URL`, `REQUIRE_DATABASE=1`). Project `03` still exercises only health smoke tests in the matrix job.
 
 ## Evolution
 

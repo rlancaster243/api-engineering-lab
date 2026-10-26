@@ -450,26 +450,26 @@ No public deployment is part of acceptance. Demonstrate local startup, configura
 ## 10. Acceptance gates
 
 ### Gate A — Contract fidelity
-- [ ] OpenAPI contracts and request/response validation match the specification.
-- [ ] Grain, resource identity, and uniqueness are in approved ADRs.
-- [ ] Error cases have documented status codes and machine-readable error codes.
-- [ ] Every error response, including framework-generated validation, 404 and 405 errors, uses the section 4.5 envelope with `request_id` (F-007, F-018, F-031, F-032).
+- [x] OpenAPI contracts and request/response validation match the specification.
+- [x] Grain, resource identity, and uniqueness are in approved ADRs.
+- [x] Error cases have documented status codes and machine-readable error codes.
+- [x] Every error response, including framework-generated validation, 404 and 405 errors, uses the section 4.5 envelope with `request_id` (F-007, F-018, F-031, F-032).
 
 ### Gate B — Persistence correctness
-- [ ] Alembic works from a fresh database.
-- [ ] Concurrency cannot violate saved-item uniqueness.
-- [ ] Failed writes roll back; no false success.
+- [x] Alembic works from a fresh database.
+- [x] Concurrency cannot violate saved-item uniqueness.
+- [x] Failed writes roll back; no false success.
 
 ### Gate C — Security correctness
-- [ ] Invalid, forged, and mistargeted tokens are rejected.
-- [ ] Two users cannot access or mutate each other's records.
-- [ ] Fixed-user shortcut cannot act as auth fallback outside local mode (F-025, F-026).
-- [ ] Concurrent first-time principal creation yields one user (F-027).
+- [x] Invalid, forged, and mistargeted tokens are rejected.
+- [x] Two users cannot access or mutate each other's records.
+- [x] Fixed-user shortcut cannot act as auth fallback outside local mode (F-025, F-026).
+- [x] Concurrent first-time principal creation yields one user (F-027).
 
 ### Gate D — Operational verification
-- [ ] Local and CI PostgreSQL tests pass.
-- [ ] Database/configuration failure paths are exercised.
-- [ ] Clean checkout reproduces app setup, migration, and tests.
+- [x] Local and CI PostgreSQL tests pass.
+- [x] Database/configuration failure paths are exercised.
+- [x] Clean checkout reproduces app setup, migration, and tests.
 
 ### Gate E — Independent engineering qualification
 - [x] Bounded new behavior is independently implemented (`GET /ready`, PR-08; evidence in `docs/evidence/project-1-gate-e-pr08.md`).
@@ -487,11 +487,11 @@ Gate E is evidenced for Project 1 in PR-08; Gates A–D remain validated by earl
 | Logical decision | Syllabus register | Proposed new file | Owning PR | Status |
 |---|---|---|---|---|
 | P1-ADR-001 Stable owner/content grain | ADR-001 (same decision) | `0002-saved-item-ownership-grain.md` [OBSERVED] | done (`36bc835`) | Accepted |
-| P1-ADR-002 REST and duplicate behavior | none | `0003-http-contract.md` | PR-01 | Proposed |
-| P1-ADR-003 PostgreSQL + migrations | ADR-003 (same decision) | `0004-persistence.md` | PR-02 | Proposed |
-| P1-ADR-004 External token verification | ADR-004 (resolves its OPEN status) | `0005-external-identity.md` | PR-05 | Proposed |
-| P1-ADR-005 Hard deletion | none (not syllabus ADR-005) | `0006-hard-delete.md` | PR-04 | Proposed |
-| P1-ADR-006 Keyset pagination | none (not syllabus ADR-006) | `0007-pagination.md` | PR-01 | Proposed |
+| P1-ADR-002 REST and duplicate behavior | none | `0003-http-contract.md` | PR-01 | Accepted |
+| P1-ADR-003 PostgreSQL + migrations | ADR-003 (same decision) | `0004-persistence.md` | PR-02 | Accepted |
+| P1-ADR-004 External token verification | ADR-004 (resolves its OPEN status) | `0005-external-identity.md` | PR-05 | Accepted |
+| P1-ADR-005 Hard deletion | none (not syllabus ADR-005) | `0006-hard-delete.md` | PR-04 | Accepted |
+| P1-ADR-006 Keyset pagination | none (not syllabus ADR-006) | `0007-pagination.md` | PR-01 | Accepted |
 | P1-ADR-007 Local + CI execution | none | `0008-execution-boundary.md` | PR-00 | Accepted |
 
 **Refinement of the accepted grain ADR [RESOLVED in PR-01].** The grain, key and `UNIQUE(user_id, content_id)` invariant in `0002` are unchanged by this spec. This spec does refine its attribute table: `id` is fixed to UUID (the ADR allows "UUID or bigint"), and `title` and `url` are added (the ADR lists only `notes`). The refinement is recorded in P1-ADR-002 (`0003-http-contract.md`); `0002` is left as accepted.

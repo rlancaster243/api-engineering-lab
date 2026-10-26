@@ -4,7 +4,7 @@ Logical ID: P1-ADR-002 in [`PROJECT_1_ENGINEERING_FIDELITY.md`](../PROJECT_1_ENG
 
 ## Status
 
-Proposed
+Accepted
 
 ## Context
 
