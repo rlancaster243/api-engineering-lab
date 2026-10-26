@@ -178,6 +178,7 @@ CREATE INDEX ix_saved_items_user_created_id
 | PATCH | `/v1/items/{id}` | `200 OK`, updated resource |
 | DELETE | `/v1/items/{id}` | `204 No Content`, empty body |
 | GET | `/health` | `200 OK`, existing process-health payload |
+| GET | `/ready` | `200 OK` with `{"status":"ready"}` when PostgreSQL answers `SELECT 1`; `503 SERVICE_UNAVAILABLE` when not (PR-08) |
 
 ### 4.1 Create
 
@@ -371,7 +372,7 @@ Repeated POST with identical owner/content returns `409`, **not** an upsert or r
 | PR-05 | External JWT validation dependency with CI issuer/JWKS test fixture; **P1-ADR-004** | PR-04 | Valid and forged/expired/wrong-claims token tests, ADR-004 accepted |
 | PR-06 | Resolve internal users from trusted issuer/subject; full owner enforcement | PR-05 | Two-principal read/write/delete isolation tests |
 | PR-07 | DB failure mapping, request correlation, config validation and reproducibility | PR-06 | Failure-injection suite, clean local + CI setup |
-| PR-08 | Independent change/debug exercise, PR/code review evidence | PR-07 | Unaided bounded implementation and regression repair |
+| PR-08 | Independent change/debug exercise, PR/code review evidence | PR-07 | `GET /ready` + Gate E evidence (`docs/evidence/project-1-gate-e-pr08.md`) |
 
 **Delivery note [OBSERVED]:** PR-02, PR-03 and PR-04 were delivered together in GitHub PR #3, which began before this spec merged and was then brought into conformance with it. It carries P1-ADR-003 (`0004`) and P1-ADR-005 (`0006`).
 
@@ -471,11 +472,11 @@ No public deployment is part of acceptance. Demonstrate local startup, configura
 - [ ] Clean checkout reproduces app setup, migration, and tests.
 
 ### Gate E — Independent engineering qualification
-- [ ] Bounded new behavior is independently implemented.
-- [ ] Deliberately introduced regression is independently diagnosed and repaired.
-- [ ] Tradeoffs, transaction boundaries, and failure/recovery behavior can be defended in review.
+- [x] Bounded new behavior is independently implemented (`GET /ready`, PR-08; evidence in `docs/evidence/project-1-gate-e-pr08.md`).
+- [x] Deliberately introduced regression is independently diagnosed and repaired (documented false-positive readiness probe; test `test_ready_performs_a_query_not_a_pool_heuristic`).
+- [x] Tradeoffs, transaction boundaries, and failure/recovery behavior can be defended in review (ADR 0009, Gate E evidence doc).
 
-These are **target gates**, not completed results.
+Gate E is evidenced for Project 1 in PR-08; Gates A–D remain validated by earlier PRs and CI.
 
 ## 11. ADR register and naming
 
