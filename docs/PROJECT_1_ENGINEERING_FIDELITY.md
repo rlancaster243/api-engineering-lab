@@ -464,19 +464,19 @@ No public deployment is part of acceptance. Demonstrate local startup, configura
 - [x] Invalid, forged, and mistargeted tokens are rejected.
 - [x] Two users cannot access or mutate each other's records.
 - [x] Fixed-user shortcut cannot act as auth fallback outside local mode (F-025, F-026).
-- [x] Concurrent first-time principal creation yields one user (F-027).
+- [x] Concurrent first-time principal creation yields one user (F-027) (`test_concurrent_resolve_creates_one_user_row`, which holds all eight resolvers at the INSERT with a barrier).
 
 ### Gate D — Operational verification
 - [x] Local and CI PostgreSQL tests pass.
-- [x] Database/configuration failure paths are exercised.
+- [x] Database/configuration failure paths are exercised (`test_ready_returns_503_against_a_real_unreachable_database`, `test_ready_executes_select_1_on_the_apps_engine`, `test_non_duplicate_integrity_error_is_a_sanitized_500_not_503`, `test_generic_non_unavailable_dbapi_error_is_a_sanitized_500`).
 - [x] Clean checkout reproduces app setup, migration, and tests.
 
 ### Gate E — Independent engineering qualification
 - [x] Bounded new behavior is independently implemented (`GET /ready`, PR-08; evidence in `docs/evidence/project-1-gate-e-pr08.md`).
-- [x] Deliberately introduced regression is independently diagnosed and repaired (documented false-positive readiness probe; test `test_ready_performs_a_query_not_a_pool_heuristic`).
+- [x] Deliberately introduced regression is independently diagnosed and repaired (documented false-positive readiness probe; tests `test_ready_returns_503_against_a_real_unreachable_database` and `test_ready_executes_select_1_on_the_apps_engine`).
 - [x] Tradeoffs, transaction boundaries, and failure/recovery behavior can be defended in review (ADR 0009, Gate E evidence doc).
 
-Gate E is evidenced for Project 1 in PR-08; Gates A–D remain validated by earlier PRs and CI.
+The repository owner keeps Gate E ticked (decision 2026-10-26). PR-08 was implemented with AI assistance (see `docs/evidence/project-1-gate-e-pr08.md`), so Gate E records reviewed delivery and defense of the design, not unaided implementation. The Project 1 audit found the original regression guard tautological: it wrapped the real probe and only counted calls, so removing the probe left it green. The audit follow-up replaced it with tests that fail when the probe is removed. An unaided repeat remains the stronger qualification and is not claimed.
 
 ## 11. ADR register and naming
 
