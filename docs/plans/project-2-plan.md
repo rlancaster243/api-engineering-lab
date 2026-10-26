@@ -32,6 +32,6 @@ Project 1 (`01-rest-api/`) is complete on `main`. Project 2 (`02-async-job-api/`
 cd 02-async-job-api
 uv sync --locked --extra dev
 uv run ruff check . && uv run ruff format --check .
-TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/async_job_api_test \
+TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5433/async_job_api_lab \
   REQUIRE_DATABASE=1 uv run pytest -q
 ```

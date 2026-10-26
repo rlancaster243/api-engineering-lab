@@ -278,7 +278,7 @@ Candidate cases: misleading `200` on failure, missing access check, partial-stat
 
 For every milestone save the PR/commit, commands or CI results, tests that prove behavior, known limits, and independent-vs-assisted contribution.
 
-- [x] Independently implement an HTTP endpoint. *(Project 1 `/v1/items`, `/ready`; evidence: PRs #3, #10.)*
+- [ ] Independently implement an HTTP endpoint. *(Project 1 `/v1/items`, `/ready`; evidence: PRs #3, #10.)*
 - [x] Explain status codes, validation, and pagination. *(Spec §4, `test_spec_contract.py`, ADR 0003/0007.)*
 - [x] Design correct keys, grain, and uniqueness. *(ADR 0002, integration tests.)*
 - [x] Run database migrations from a clean database. *(Alembic tests, CI postgres jobs.)*
