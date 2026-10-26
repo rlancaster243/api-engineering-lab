@@ -19,7 +19,10 @@ from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from starlette.exceptions import HTTPException as StarletteHTTPException
+
+from app.db_errors import is_service_unavailable
 
 logger = logging.getLogger(__name__)
 
@@ -170,6 +173,20 @@ async def _handle_unexpected(request: Request, exc: Exception) -> JSONResponse:
     return error_response(request, ErrorCode.INTERNAL_ERROR)
 
 
+async def _handle_dbapi_error(request: Request, exc: Exception) -> JSONResponse:
+    assert isinstance(exc, DBAPIError)
+    request_id = _request_id(request)
+    if isinstance(exc, IntegrityError):
+        # Duplicate saves are handled in the repository; any other integrity failure is 500.
+        logger.error("database integrity error request_id=%s", request_id, exc_info=exc)
+        return error_response(request, ErrorCode.INTERNAL_ERROR)
+    if is_service_unavailable(exc):
+        logger.warning("database unavailable request_id=%s", request_id, exc_info=exc)
+        return error_response(request, ErrorCode.SERVICE_UNAVAILABLE)
+    logger.error("database error request_id=%s", request_id, exc_info=exc)
+    return error_response(request, ErrorCode.INTERNAL_ERROR)
+
+
 def install_error_handling(app: FastAPI) -> None:
     """Install the request-id middleware and the uniform error handlers on ``app``."""
 
@@ -187,4 +204,5 @@ def install_error_handling(app: FastAPI) -> None:
     app.add_exception_handler(ApiError, _handle_api_error)
     app.add_exception_handler(RequestValidationError, _handle_validation_error)
     app.add_exception_handler(StarletteHTTPException, _handle_http_exception)
+    app.add_exception_handler(DBAPIError, _handle_dbapi_error)
     app.add_exception_handler(Exception, _handle_unexpected)
