@@ -32,7 +32,7 @@ Saved items must survive restarts, stay unique per owner under concurrency, and 
 
 - Two sources state the schema: the migration and the ORM mappings. They are checked by the integration tests, not by autogeneration; Alembic autogenerate does not compare CHECK constraints.
 - Raw SQL in the migration bypasses SQLAlchemy's dialect abstraction. PostgreSQL is the only supported engine (ADR 0008), so this is accepted.
-- Database outages currently surface as `500 INTERNAL_ERROR`. Mapping them to `503 SERVICE_UNAVAILABLE` (F-016) is assigned to PR-07.
+- Transient database outages surface as `503 SERVICE_UNAVAILABLE` via `app/db_errors.py` and the `DBAPIError` handler (F-016, PR-07). Other database errors remain `500`.
 - `created_at` is transaction-start time; ADR 0007 documents the effect on pagination.
 
 ## References
