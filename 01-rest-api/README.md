@@ -41,12 +41,13 @@ Startup fails closed when configuration is missing or unsafe: no `DATABASE_URL`,
 
 ```bash
 curl -i http://127.0.0.1:8001/health
+curl -i http://127.0.0.1:8001/ready
 curl -s -X POST http://127.0.0.1:8001/v1/items -H 'content-type: application/json' \
   -d '{"content_id":"article-042","title":"Distributed systems notes"}'
 curl -s http://127.0.0.1:8001/v1/items
 ```
 
-`/health` proves **process responsiveness** only; it does not touch PostgreSQL. In `local_dev` mode every item belongs to the seeded development owner, and the API never accepts `user_id`.
+`/health` proves **process responsiveness** only; it does not touch PostgreSQL. `/ready` runs `SELECT 1` and returns `503` when the database is unavailable ([ADR 0009](../docs/decisions/0009-readiness-endpoint.md)). In `local_dev` mode every item belongs to the seeded development owner, and the API never accepts `user_id`.
 
 Upgrading a database created from the earlier, unmerged `0001_saved_items` revision fails with an unknown-revision error. Recreate it (`docker compose down -v`).
 

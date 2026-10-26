@@ -1,18 +1,23 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from pydantic import BaseModel
 
 from app.config import AuthMode, load_settings
 from app.db import create_db_engine, create_session_factory
 from app.errors import install_error_handling
 from app.pagination import CursorCodec
+from app.ready import database_is_ready
 from app.routers.items import router as items_router
 from app.tokens import JwksKeySource, TokenVerifier
 
 
 class HealthResponse(BaseModel):
+    status: str
+
+
+class ReadyResponse(BaseModel):
     status: str
 
 
@@ -54,3 +59,13 @@ app.include_router(items_router)
 @app.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     return HealthResponse(status="ok")
+
+
+@app.get("/ready", response_model=ReadyResponse)
+def ready(request: Request) -> ReadyResponse:
+    session = request.app.state.session_factory()
+    try:
+        database_is_ready(session)
+    finally:
+        session.close()
+    return ReadyResponse(status="ready")
