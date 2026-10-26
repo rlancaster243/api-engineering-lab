@@ -1,8 +1,10 @@
 """Two-principal isolation over HTTP (spec PR-06, F-009 to F-011, F-027)."""
 
 import concurrent.futures
+import threading
 import uuid
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import Engine, text
 
@@ -118,12 +120,20 @@ def test_seed_user_never_resolved_in_external_jwt(
 
 
 def test_concurrent_resolve_creates_one_user_row(clean_db: Engine) -> None:
+    """F-027, with the race forced: every worker SELECTs (no row yet) before any INSERTs."""
+    from sqlalchemy import event
     from sqlalchemy.orm import sessionmaker
 
     from app.users import UserRepository
 
+    workers = 8
     subject = "concurrent-subject"
     issuer_b = "https://issuer-b.test"
+    barrier = threading.Barrier(workers, timeout=10)
+
+    def hold_inserts(conn, cursor, statement, parameters, context, executemany) -> None:  # noqa: ANN001
+        if statement.lstrip().upper().startswith("INSERT INTO USERS"):
+            barrier.wait()
 
     def resolve_once(issuer: str) -> uuid.UUID:
         session = sessionmaker(bind=clean_db, autoflush=False, autocommit=False)()
@@ -132,8 +142,16 @@ def test_concurrent_resolve_creates_one_user_row(clean_db: Engine) -> None:
         finally:
             session.close()
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-        ids = list(pool.map(lambda _: resolve_once(OIDC_ISSUER), range(8)))
+    event.listen(clean_db, "before_cursor_execute", hold_inserts)
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(resolve_once, OIDC_ISSUER) for _ in range(workers)]
+            try:
+                ids = [future.result(timeout=30) for future in futures]
+            except threading.BrokenBarrierError:
+                pytest.fail("not all resolvers reached their INSERT together; race not forced")
+    finally:
+        event.remove(clean_db, "before_cursor_execute", hold_inserts)
     assert len(set(ids)) == 1
 
     other_id = resolve_once(issuer_b)
