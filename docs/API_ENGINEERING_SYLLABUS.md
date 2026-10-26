@@ -267,10 +267,10 @@ Candidate cases: misleading `200` on failure, missing access check, partial-stat
 |---|---|---|
 | ADR-001: stable `(user_id, content_id)` grain | Accepted (`0002-saved-item-ownership-grain.md`) | Model ownership in Project 1A; enforce in Project 1B |
 | ADR-002: trunk-based development | Accepted | Short-lived branches, PR validation |
-| ADR-003: PostgreSQL persistence | Proposed | Transactions, constraints, migrations |
+| ADR-003: PostgreSQL persistence | Accepted | [`0004-persistence.md`](decisions/0004-persistence.md) |
 | ADR-004: authentication mechanism | Accepted | [`0005-external-identity.md`](decisions/0005-external-identity.md) (OIDC Bearer access tokens) |
-| ADR-005: PostgreSQL-backed job store | Proposed | Avoid premature broker |
-| ADR-006: idempotency/recovery guarantee | OPEN | Define limits around side effects |
+| ADR-005: PostgreSQL-backed job store | Proposed | [`0010-postgres-job-store.md`](decisions/0010-postgres-job-store.md) (Project 2) |
+| ADR-006: idempotency/recovery guarantee | Proposed | [`0011-job-idempotency.md`](decisions/0011-job-idempotency.md) (PR-2-04) |
 | README roadmap alignment | Resolved | Root README & `01-rest-api/README.md` aligned with Project 1A/1B/3 |
 | Exact Project 3 source code | OPEN | Must be independently owned or authorized |
 
@@ -278,23 +278,24 @@ Candidate cases: misleading `200` on failure, missing access check, partial-stat
 
 For every milestone save the PR/commit, commands or CI results, tests that prove behavior, known limits, and independent-vs-assisted contribution.
 
-- [ ] Independently implement an HTTP endpoint.
-- [ ] Explain status codes, validation, and pagination.
-- [ ] Design correct keys, grain, and uniqueness.
-- [ ] Run database migrations from a clean database.
-- [ ] Demonstrate a rolled-back failed transaction.
-- [ ] Enforce authentication and authorization.
-- [ ] Prove two-user isolation.
-- [ ] Implement and test durable idempotent job submission.
-- [ ] Demonstrate safe concurrent worker claims.
-- [ ] Recover a job after worker crash.
-- [ ] Debug an unfamiliar failing test.
-- [ ] Run project from clean checkout and defend a tradeoff in code review.
+- [ ] Independently implement an HTTP endpoint. *(Project 1 `/v1/items`, `/ready`; evidence: PRs #3, #10.)*
+- [x] Explain status codes, validation, and pagination. *(Spec §4, `test_spec_contract.py`, ADR 0003/0007.)*
+- [x] Design correct keys, grain, and uniqueness. *(ADR 0002, integration tests.)*
+- [x] Run database migrations from a clean database. *(Alembic tests, CI postgres jobs.)*
+- [x] Demonstrate a rolled-back failed transaction. *(`test_persistence` / item tests.)*
+- [x] Enforce authentication and authorization. *(PR #8, ADR 0005.)*
+- [x] Prove two-user isolation. *(`test_isolation.py`.)*
+- [ ] Implement and test durable idempotent job submission. *(Project 2.)*
+- [ ] Demonstrate safe concurrent worker claims. *(Project 2.)*
+- [ ] Recover a job after worker crash. *(Project 2.)*
+- [x] Debug an unfamiliar failing test. *(Gate E evidence, PR-08.)*
+- [x] Run project from clean checkout and defend a tradeoff in code review. *(README + CI; ADRs.)*
 
 **Evidence levels:** Documented → Implemented → Tested → Demonstrated → Operationally validated. Do not collapse these levels.
 
 ## 15. Immediate backlog — next implementation action
 
+- [ ] **Project 2 PR-2-01:** job schema, `POST /v1/jobs` → 202, `GET /v1/jobs/{id}` (foundation: PR-2-00).
 - [x] Read current `README.md`, project directories, and CI configuration.
 - [x] Align the README's phase ownership/auth wording with this syllabus.
 - [x] Choose a small first feature branch, e.g. `feature/rest-api-foundation`.
