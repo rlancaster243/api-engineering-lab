@@ -82,13 +82,18 @@ def test_run_once_on_empty_queue_returns_false(
     assert logged_events(log_stream) == []
 
 
-def test_handler_failure_marks_job_failed_and_worker_continues(
+def test_handler_failure_retries_then_terminal_fails(
     session_factory: sessionmaker[Session],
     migrated_engine: Engine,
     log_stream: io.StringIO,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    failing_id = seed_job(migrated_engine, job_type="boom", payload={})
+    """A raising handler requeues while attempts remain, and fails once exhausted.
+
+    max_attempts=1 so the single failed attempt is the last one: the job must land
+    FAILED rather than be requeued.
+    """
+    failing_id = seed_job(migrated_engine, job_type="boom", payload={}, max_attempts=1)
     following_id = seed_job(migrated_engine, job_type="echo", payload={"ok": True})
 
     def _boom(payload: dict) -> dict:
@@ -113,7 +118,7 @@ def test_handler_failure_marks_job_failed_and_worker_continues(
 def test_unknown_type_fails_job_without_raising(
     session_factory: sessionmaker[Session], migrated_engine: Engine, log_stream: io.StringIO
 ) -> None:
-    job_id = seed_job(migrated_engine, job_type="no.such.handler", payload={"a": 1})
+    job_id = seed_job(migrated_engine, job_type="no.such.handler", payload={"a": 1}, max_attempts=1)
 
     assert run_once(session_factory, worker_id="worker-unknown") is True
 
@@ -130,7 +135,7 @@ def test_long_error_message_is_truncated_to_2000_chars(
     log_stream: io.StringIO,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    job_id = seed_job(migrated_engine, job_type="chatty", payload={})
+    job_id = seed_job(migrated_engine, job_type="chatty", payload={}, max_attempts=1)
 
     def _chatty(payload: dict) -> dict:
         raise ValueError("x" * 5000)
@@ -299,7 +304,13 @@ def test_non_dict_handler_result_fails_job_and_worker_survives(
     log_stream: io.StringIO,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A handler returning a list must fail the job, not strand it RUNNING."""
+    """A handler returning a list must fail the job, not strand it RUNNING.
+
+    Under PR-2-03 semantics "fail" means the failure is recorded, so a non-object
+    result consumes the attempt budget: the first failure requeues, and the job
+    terminates FAILED once the budget is gone. Either way the row never sits
+    RUNNING with a live lease, and the next job still runs.
+    """
     bad_id = seed_job(migrated_engine, job_type="returns.list", payload={})
     following_id = seed_job(migrated_engine, payload={"ok": True})
 
@@ -310,15 +321,30 @@ def test_non_dict_handler_result_fails_job_and_worker_survives(
 
     assert run_once(session_factory, worker_id="worker-badresult") is True
 
-    row = read_job(migrated_engine, bad_id)
-    assert row.status == "FAILED"
-    assert row.last_error == "invalid handler result: expected dict, got list"
-    assert row.result is None
-    assert row.finished_at is not None
-    assert row.lease_owner is None
+    requeued = read_job(migrated_engine, bad_id)
+    assert requeued.status == "PENDING", "a non-object result must be recorded, not ignored"
+    assert requeued.last_error == "invalid handler result: expected dict, got list"
+    assert requeued.result is None
+    assert requeued.finished_at is None
+    assert requeued.lease_owner is None
 
+    # The healthy job is served while the bad one is backed off.
     assert run_once(session_factory, worker_id="worker-badresult") is True
     assert read_job(migrated_engine, following_id).status == "SUCCEEDED"
+
+    # Clear the backoff and spend the remaining attempts: the job must terminate.
+    for _ in range(2):
+        with migrated_engine.connect() as conn:
+            conn.execute(
+                text("UPDATE jobs SET next_attempt_at = now() WHERE id = :id"), {"id": bad_id}
+            )
+            conn.commit()
+        assert run_once(session_factory, worker_id="worker-badresult") is True
+
+    exhausted = read_job(migrated_engine, bad_id)
+    assert exhausted.status == "FAILED"
+    assert exhausted.finished_at is not None
+    assert exhausted.lease_owner is None
 
 
 def test_non_serialisable_result_fails_job_instead_of_stranding_it(
@@ -534,10 +560,14 @@ def test_handler_failure_message_never_reaches_the_logs(
     """A secret quoted in an exception message stays out of stdout, but not out of the row.
 
     The message is handler-authored text: it is the operator's debugging signal in
-    ``jobs.last_error`` and must never be written to a log line.
+    ``jobs.last_error`` and must never be written to a log line. Checked on both
+    failure events: ``job.retrying`` while the budget lasts and ``job.failed`` at
+    the end, since PR-2-03 sends a handler failure through the retry path.
     """
     secret = "sk-live-9f3c1a7b2e"
-    job_id = seed_job(migrated_engine, job_type="leaky", payload={"api_key": secret})
+    job_id = seed_job(
+        migrated_engine, job_type="leaky", payload={"api_key": secret}, max_attempts=1
+    )
 
     def _leaky(payload: dict) -> dict:
         raise RuntimeError(f"rejected key {payload['api_key']}")
@@ -561,6 +591,47 @@ def test_handler_failure_message_never_reaches_the_logs(
     assert failed_events[0]["error_class"] == "RuntimeError"
     assert failed_events[0]["last_error_chars"] == len(row.last_error)
     assert "last_error" not in failed_events[0]
+
+
+def test_handler_failure_retry_event_carries_class_and_length_only(
+    session_factory: sessionmaker[Session],
+    migrated_engine: Engine,
+    log_stream: io.StringIO,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The requeue event must obey the same rule as the terminal one.
+
+    PR-2-03 made a handler failure requeue while budget remains, which moved the
+    failure event from ``job.failed`` to ``job.retrying``. The security contract
+    does not move with it: ``job.retrying`` reports class and message length, and
+    the message stays on the row.
+    """
+    secret = "sk-live-retry-77c2"
+    job_id = seed_job(migrated_engine, job_type="leaky-retry", payload={"api_key": secret})
+
+    def _leaky(payload: dict) -> dict:
+        raise RuntimeError(f"rejected key {payload['api_key']}")
+
+    monkeypatch.setitem(worker_module.handlers.HANDLERS, "leaky-retry", _leaky)
+
+    assert run_once(session_factory, worker_id="worker-leaky-retry") is True
+
+    output = log_stream.getvalue()
+    assert secret not in output, "an exception message reached the logs on the retry path"
+    assert "rejected key" not in output, "handler message text reached the logs"
+
+    row = read_job(migrated_engine, job_id)
+    assert row.status == "PENDING"
+    assert row.last_error == f"RuntimeError: rejected key {secret}"
+
+    retrying = [
+        event for event in logged_events(log_stream) if event.get("event") == "job.retrying"
+    ]
+    assert len(retrying) == 1
+    assert retrying[0]["error_class"] == "RuntimeError"
+    assert retrying[0]["last_error_chars"] == len(row.last_error)
+    assert "last_error" not in retrying[0]
+    assert retrying[0]["backoff_seconds"] > 0
 
 
 def test_non_serialisable_result_does_not_leak_payload_or_result_to_logs(

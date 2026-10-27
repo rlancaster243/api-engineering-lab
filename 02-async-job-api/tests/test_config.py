@@ -75,3 +75,50 @@ def test_empty_worker_values_fall_back_to_defaults() -> None:
     settings = load_settings({**BASE_ENVIRON, "LEASE_SECONDS": "", "WORKER_POLL_SECONDS": ""})
     assert settings.lease_seconds == 60
     assert settings.worker_poll_seconds == 1.0
+
+
+# ---------------------------------------------------------------------------
+# Retry backoff settings (PR-2-03)
+# ---------------------------------------------------------------------------
+
+
+def test_retry_backoff_defaults() -> None:
+    settings = load_settings(BASE_ENVIRON)
+    assert settings.retry_backoff_seconds == 5
+    assert settings.max_retry_backoff_seconds == 300
+
+
+def test_retry_backoff_accepts_overrides() -> None:
+    settings = load_settings(
+        {**BASE_ENVIRON, "RETRY_BACKOFF_SECONDS": "10", "MAX_RETRY_BACKOFF_SECONDS": "600"}
+    )
+    assert settings.retry_backoff_seconds == 10
+    assert settings.max_retry_backoff_seconds == 600
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "3601", "abc", "1.5"])
+def test_invalid_retry_backoff_seconds_raises_config_error(value: str) -> None:
+    with pytest.raises(ConfigError, match="RETRY_BACKOFF_SECONDS"):
+        load_settings({**BASE_ENVIRON, "RETRY_BACKOFF_SECONDS": value})
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "3601", "abc"])
+def test_invalid_max_retry_backoff_seconds_raises_config_error(value: str) -> None:
+    with pytest.raises(ConfigError, match="MAX_RETRY_BACKOFF_SECONDS"):
+        load_settings({**BASE_ENVIRON, "MAX_RETRY_BACKOFF_SECONDS": value})
+
+
+def test_max_backoff_below_backoff_is_rejected() -> None:
+    """A ceiling under the base would make the cap meaningless."""
+    with pytest.raises(ConfigError, match="greater than or equal to"):
+        load_settings(
+            {**BASE_ENVIRON, "RETRY_BACKOFF_SECONDS": "60", "MAX_RETRY_BACKOFF_SECONDS": "30"}
+        )
+
+
+def test_backoff_equal_to_ceiling_is_allowed() -> None:
+    settings = load_settings(
+        {**BASE_ENVIRON, "RETRY_BACKOFF_SECONDS": "30", "MAX_RETRY_BACKOFF_SECONDS": "30"}
+    )
+    assert settings.retry_backoff_seconds == 30
+    assert settings.max_retry_backoff_seconds == 30
