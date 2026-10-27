@@ -1,6 +1,8 @@
 """Job submission and status endpoints."""
 
+import json
 import uuid
+from datetime import datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Request, Response
@@ -26,8 +28,6 @@ class SubmitJobRequest(BaseModel):
     @field_validator("payload")
     @classmethod
     def payload_size(cls, v: dict) -> dict:
-        import json
-
         raw = json.dumps(v)
         if len(raw.encode()) > _MAX_PAYLOAD_BYTES:
             raise ValueError("payload exceeds 64 KiB limit")
@@ -37,7 +37,7 @@ class SubmitJobRequest(BaseModel):
 class SubmitJobResponse(BaseModel):
     id: uuid.UUID
     status: str
-    created_at: str
+    created_at: datetime
 
 
 class JobStatusResponse(BaseModel):
@@ -46,8 +46,8 @@ class JobStatusResponse(BaseModel):
     status: str
     attempt: int
     max_attempts: int
-    created_at: str
-    updated_at: str
+    created_at: datetime
+    updated_at: datetime
     result: dict | None = None
     last_error: str | None = None
 
@@ -69,7 +69,7 @@ def submit_job(
     return SubmitJobResponse(
         id=job.id,
         status=job.status,
-        created_at=job.created_at.isoformat(),
+        created_at=job.created_at,
     )
 
 
@@ -87,8 +87,8 @@ def get_job(
         status=job.status,
         attempt=job.attempt,
         max_attempts=job.max_attempts,
-        created_at=job.created_at.isoformat(),
-        updated_at=job.updated_at.isoformat(),
+        created_at=job.created_at,
+        updated_at=job.updated_at,
         result=job.result,
         last_error=job.last_error,
     )

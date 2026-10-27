@@ -2,9 +2,15 @@
 
 Requires a PostgreSQL database via TEST_DATABASE_URL.
 All tests use the migrated_engine and client fixtures from conftest.py.
+
+db_client wiring: monkeypatch sets DATABASE_URL to the test URL before entering
+TestClient. The app lifespan calls load_settings() at startup which reads
+os.environ, so it picks up the patched value without any module reload. The app
+module is imported once; middleware and handlers are registered once.
 """
 
 import uuid
+from collections.abc import Generator
 
 import pytest
 from fastapi.testclient import TestClient
@@ -12,19 +18,16 @@ from sqlalchemy import Engine, text
 
 
 @pytest.fixture
-def db_client(migrated_engine: Engine, monkeypatch: pytest.MonkeyPatch) -> TestClient:
-    """A TestClient wired to the migrated test database, with a clean jobs table."""
+def db_client(
+    migrated_engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> Generator[TestClient, None, None]:
+    """TestClient wired to the migrated test database, with a clean jobs table after each test."""
     url = migrated_engine.url.render_as_string(hide_password=False)
     monkeypatch.setenv("DATABASE_URL", url)
-    # Re-import app so lifespan picks up the monkeypatched DATABASE_URL.
-    import importlib
+    from app.main import app
 
-    import app.main as main_module
-
-    importlib.reload(main_module)
-    with TestClient(main_module.app) as c:
+    with TestClient(app) as c:
         yield c
-    # Clean up between tests.
     with migrated_engine.connect() as conn:
         conn.execute(text("DELETE FROM jobs"))
         conn.commit()
@@ -106,7 +109,6 @@ def test_malformed_type_returns_422(db_client: TestClient) -> None:
     assert resp.status_code == 422
     error = resp.json()["error"]
     assert error["code"] == "VALIDATION_ERROR"
-    # Submitted value must not appear in details
     raw = str(resp.json())
     assert "Bad-Type!" not in raw
 
@@ -138,26 +140,29 @@ def test_max_attempts_above_20_returns_422(db_client: TestClient) -> None:
 def test_db_unavailable_returns_503_not_202(
     migrated_engine: Engine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """With engine pointed at a dead port, POST returns 503, not 202."""
+    """With engine pointed at a dead port, POST returns 503, not 202.
+
+    Row count is measured before and after to avoid dependency on test ordering.
+    DATABASE_URL is monkeypatched to a dead address; the lifespan picks it up at
+    TestClient startup — no module reload needed.
+    """
+    with migrated_engine.connect() as conn:
+        baseline = conn.execute(text("SELECT count(*) FROM jobs")).scalar_one()
+
     dead_url = "postgresql://postgres:postgres@127.0.0.1:19999/nonexistent"
     monkeypatch.setenv("DATABASE_URL", dead_url)
+    from app.main import app
 
-    import importlib
-
-    import app.main as main_module
-
-    importlib.reload(main_module)
-    with TestClient(main_module.app, raise_server_exceptions=False) as c:
+    with TestClient(app, raise_server_exceptions=False) as c:
         resp = c.post("/v1/jobs", json={"type": "echo", "payload": {}})
 
     assert resp.status_code == 503
     error = resp.json()["error"]
     assert error["code"] == "SERVICE_UNAVAILABLE"
 
-    # Confirm the real DB has no new row from this failed attempt.
     with migrated_engine.connect() as conn:
-        count = conn.execute(text("SELECT count(*) FROM jobs")).scalar_one()
-    assert count == 0
+        after = conn.execute(text("SELECT count(*) FROM jobs")).scalar_one()
+    assert after == baseline, f"Expected row count unchanged ({baseline}), got {after}"
 
 
 # ---------------------------------------------------------------------------
