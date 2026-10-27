@@ -51,7 +51,7 @@ def test_migration_round_trip(migrated_database_url: str) -> None:
 
         with engine.connect() as conn:
             version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-            assert version == "0002_jobs"
+            assert version == "0003_job_leases"
             result = conn.execute(
                 text(
                     "SELECT table_name FROM information_schema.tables "
@@ -71,7 +71,7 @@ def test_migration_round_trip(migrated_database_url: str) -> None:
 def test_migration_upgrade_from_clean_database(migrated_engine: Engine) -> None:
     with migrated_engine.connect() as connection:
         version = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-    assert version == "0002_jobs"
+    assert version == "0003_job_leases"
 
 
 def test_jobs_table_exists(migrated_engine: Engine) -> None:
@@ -106,6 +106,10 @@ def test_trg_jobs_updated_at_fires(migrated_engine: Engine) -> None:
     INSERT and UPDATE run in separate transactions so PostgreSQL's transaction-scoped
     now() returns a later timestamp for the UPDATE. A 50 ms sleep between them
     ensures the difference is measurable even on fast machines.
+
+    The UPDATE deliberately leaves status alone: since 0003_job_leases a transition
+    to RUNNING requires a lease (ck_jobs_running_has_lease), and this test is about
+    the trigger, not the lease protocol.
     """
     job_id = str(uuid.uuid4())
 
@@ -119,7 +123,10 @@ def test_trg_jobs_updated_at_fires(migrated_engine: Engine) -> None:
     time.sleep(0.05)
 
     with migrated_engine.connect() as conn:
-        conn.execute(text("UPDATE jobs SET status = 'RUNNING' WHERE id = :id"), {"id": job_id})
+        conn.execute(
+            text("UPDATE jobs SET payload = '{\"touched\": true}'::jsonb WHERE id = :id"),
+            {"id": job_id},
+        )
         row = conn.execute(
             text("SELECT created_at, updated_at FROM jobs WHERE id = :id"), {"id": job_id}
         ).one()
@@ -145,3 +152,62 @@ def test_ck_jobs_updated_after_created_rejects_violation(migrated_engine: Engine
                 {"id": job_id},
             )
             conn.commit()
+
+
+def test_0003_adds_lease_columns(migrated_engine: Engine) -> None:
+    """The four lease columns from 0003_job_leases exist and are nullable."""
+    with migrated_engine.connect() as connection:
+        columns = dict(
+            connection.execute(
+                text(
+                    "SELECT column_name, is_nullable FROM information_schema.columns "
+                    "WHERE table_schema = 'public' AND table_name = 'jobs'"
+                )
+            ).all()
+        )
+    for column in ("lease_owner", "lease_expires_at", "claimed_at", "finished_at"):
+        assert column in columns, f"0003_job_leases did not add {column}"
+        assert columns[column] == "YES", f"{column} must be nullable"
+
+
+def test_0003_adds_lease_index(migrated_engine: Engine) -> None:
+    """ix_jobs_lease_expiry must exist as a partial index on RUNNING rows."""
+    with migrated_engine.connect() as connection:
+        definition = connection.execute(
+            text("SELECT indexdef FROM pg_indexes WHERE indexname = 'ix_jobs_lease_expiry'")
+        ).scalar_one_or_none()
+    assert definition is not None, "ix_jobs_lease_expiry is missing"
+    assert "lease_expires_at" in definition
+    assert "RUNNING" in definition, "the lease index must be partial on RUNNING rows"
+
+
+def test_lease_columns_downgrade_cleanly(migrated_database_url: str) -> None:
+    """Downgrading 0003 then re-upgrading must leave the schema usable.
+
+    Exercises the DOWNGRADE path in isolation; test_migration_round_trip covers the
+    whole chain, but a broken single step is easier to attribute here.
+    """
+    config = Config(str(_PROJECT_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(_PROJECT_ROOT / "alembic"))
+    config.set_main_option("sqlalchemy.url", sqlalchemy_url(migrated_database_url))
+
+    engine = create_engine(sqlalchemy_url(migrated_database_url))
+    try:
+        command.downgrade(config, "0002_jobs")
+        with engine.connect() as conn:
+            remaining = conn.execute(
+                text(
+                    "SELECT count(*) FROM information_schema.columns "
+                    "WHERE table_schema = 'public' AND table_name = 'jobs' "
+                    "AND column_name IN "
+                    "('lease_owner','lease_expires_at','claimed_at','finished_at')"
+                )
+            ).scalar_one()
+        assert remaining == 0, "downgrade left lease columns behind"
+    finally:
+        command.upgrade(config, "head")
+        engine.dispose()
+
+    with create_engine(sqlalchemy_url(migrated_database_url)).connect() as conn:
+        version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+    assert version == "0003_job_leases"
