@@ -2,8 +2,8 @@
 
 ## Progression
 
-1. **PR-2-00 (Foundation):** Reproducible install, `DATABASE_URL`, Alembic, `GET /health`, CI postgres job.
-2. **PR-2-01+:** Job schema, `POST /v1/jobs` → 202, worker, idempotency (see [Project 2 plan](../docs/plans/project-2-plan.md)).
+1. **PR-2-00 (Foundation):** Done ([#11](https://github.com/rlancaster243/api-engineering-lab/pull/11)) — install, `DATABASE_URL`, Alembic, `GET /health`, CI postgres job.
+2. **PR-2-01 (next):** Job schema, `POST /v1/jobs` → 202, then worker and idempotency (see [Project 2 plan](../docs/plans/project-2-plan.md)).
 
 ## Run locally
 

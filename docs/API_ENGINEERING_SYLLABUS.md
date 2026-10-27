@@ -295,7 +295,8 @@ For every milestone save the PR/commit, commands or CI results, tests that prove
 
 ## 15. Immediate backlog — next implementation action
 
-- [ ] **Project 2 PR-2-01:** job schema, `POST /v1/jobs` → 202, `GET /v1/jobs/{id}` (foundation: PR-2-00).
+- [x] **Project 2 PR-2-00:** foundation on `02-async-job-api/` ([#11](https://github.com/rlancaster243/api-engineering-lab/pull/11)).
+- [ ] **Project 2 PR-2-01:** job schema, `POST /v1/jobs` → 202, `GET /v1/jobs/{id}`.
 - [x] Read current `README.md`, project directories, and CI configuration.
 - [x] Align the README's phase ownership/auth wording with this syllabus.
 - [x] Choose a small first feature branch, e.g. `feature/rest-api-foundation`.
