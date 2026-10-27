@@ -125,8 +125,8 @@ def test_claim_skips_row_locked_by_another_transaction(
     def worker_a() -> None:
         try:
             with holder_factory() as session:
-                job = repository.claim_next_job(session, "worker-a", 60)
-                claimed_by_a.append(None if job is None else job.id)
+                claim = repository.claim_next_job(session, "worker-a", 60)
+                claimed_by_a.append(None if claim is None else claim[0].id)
                 a_has_claimed.set()
                 release_a.wait(timeout=BLOCK_TIMEOUT_SECONDS)
                 session.commit()
@@ -136,8 +136,8 @@ def test_claim_skips_row_locked_by_another_transaction(
     def worker_b() -> None:
         assert a_has_claimed.wait(timeout=BLOCK_TIMEOUT_SECONDS)
         with new_session_factory(database_url)() as session:
-            job = repository.claim_next_job(session, "worker-b", 60)
-            claimed_by_b.append(None if job is None else job.id)
+            claim = repository.claim_next_job(session, "worker-b", 60)
+            claimed_by_b.append(None if claim is None else claim[0].id)
             session.commit()
 
     thread_a = threading.Thread(target=worker_a, daemon=True)
@@ -177,9 +177,9 @@ def test_claim_returns_oldest_first(database_url: str, migrated_engine: Engine) 
     try:
         for _ in range(3):
             with factory() as session:
-                job = repository.claim_next_job(session, "worker-order", 60)
-                assert job is not None
-                claimed.append(job.id)
+                claim = repository.claim_next_job(session, "worker-order", 60)
+                assert claim is not None
+                claimed.append(claim[0].id)
                 session.commit()
     finally:
         dispose(factory)
@@ -214,9 +214,9 @@ def test_claim_sets_lease_and_increments_attempt(
     factory = new_session_factory(database_url)
     try:
         with factory() as session:
-            job = repository.claim_next_job(session, "worker-lease", 90)
+            claim = repository.claim_next_job(session, "worker-lease", 90)
             session.commit()
-            assert job is not None and job.id == job_id
+            assert claim is not None and claim[0].id == job_id
     finally:
         dispose(factory)
 
@@ -240,8 +240,8 @@ def _claim_as(database_url: str, worker_id: str, job_id: uuid.UUID) -> None:
     factory = new_session_factory(database_url)
     try:
         with factory() as session:
-            job = repository.claim_next_job(session, worker_id, 60)
-            assert job is not None and job.id == job_id
+            claim = repository.claim_next_job(session, worker_id, 60)
+            assert claim is not None and claim[0].id == job_id
             session.commit()
     finally:
         dispose(factory)

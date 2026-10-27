@@ -82,13 +82,18 @@ def test_run_once_on_empty_queue_returns_false(
     assert logged_events(log_stream) == []
 
 
-def test_handler_failure_marks_job_failed_and_worker_continues(
+def test_handler_failure_retries_then_terminal_fails(
     session_factory: sessionmaker[Session],
     migrated_engine: Engine,
     log_stream: io.StringIO,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    failing_id = seed_job(migrated_engine, job_type="boom", payload={})
+    """A raising handler requeues while attempts remain, and fails once exhausted.
+
+    max_attempts=1 so the single failed attempt is the last one: the job must land
+    FAILED rather than be requeued.
+    """
+    failing_id = seed_job(migrated_engine, job_type="boom", payload={}, max_attempts=1)
     following_id = seed_job(migrated_engine, job_type="echo", payload={"ok": True})
 
     def _boom(payload: dict) -> dict:
@@ -113,7 +118,7 @@ def test_handler_failure_marks_job_failed_and_worker_continues(
 def test_unknown_type_fails_job_without_raising(
     session_factory: sessionmaker[Session], migrated_engine: Engine, log_stream: io.StringIO
 ) -> None:
-    job_id = seed_job(migrated_engine, job_type="no.such.handler", payload={"a": 1})
+    job_id = seed_job(migrated_engine, job_type="no.such.handler", payload={"a": 1}, max_attempts=1)
 
     assert run_once(session_factory, worker_id="worker-unknown") is True
 
@@ -130,7 +135,7 @@ def test_long_error_message_is_truncated_to_2000_chars(
     log_stream: io.StringIO,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    job_id = seed_job(migrated_engine, job_type="chatty", payload={})
+    job_id = seed_job(migrated_engine, job_type="chatty", payload={}, max_attempts=1)
 
     def _chatty(payload: dict) -> dict:
         raise ValueError("x" * 5000)

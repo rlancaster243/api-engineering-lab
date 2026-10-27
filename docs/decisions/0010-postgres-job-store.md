@@ -37,9 +37,20 @@ Project 2 needs durable job state, worker claims, and client status queries. Int
   result. This is deliberate: it makes a crash-looping job terminate instead of
   retrying forever, and it keeps the attempt counter honest about how many times
   work was actually started. The cost is that a crash can exhaust a job's attempts
-  without the work ever completing — acceptable only because PR-2-03 adds lease
-  expiry recovery, and a stuck job is visible as `RUNNING` with an expired lease
-  rather than silently vanishing.
+  without the work ever completing — acceptable because PR-2-03 adds lease expiry
+  recovery, and a stuck job is visible as `RUNNING` with an expired lease rather
+  than silently vanishing.
+- **The claim admits expired leases, and `ix_jobs_lease_expiry` is load-bearing.**
+  Since PR-2-03 the claim runs two probes: one for `RUNNING` rows whose lease has
+  expired, one for due `PENDING` rows. The partial index
+  `(lease_expires_at) WHERE status = 'RUNNING'` is what keeps the reclaim probe an
+  index scan rather than a table scan — it is a correctness-of-throughput
+  dependency, not observability. The two probes are separate statements on purpose:
+  a single predicate OR-ing both statuses defeats both partial indexes and falls
+  back to a sequential scan with a disk sort.
+- **Recovery is worker-driven, not a scheduler.** The sweep that terminally fails
+  exhausted expired jobs runs inline at the start of every worker cycle. If no
+  worker is running, nothing recovers.
 
 ## References
 
