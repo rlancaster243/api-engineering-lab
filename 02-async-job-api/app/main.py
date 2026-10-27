@@ -6,6 +6,8 @@ from pydantic import BaseModel
 
 from app.config import load_settings
 from app.db import create_db_engine, create_session_factory
+from app.errors import install_error_handling
+from app.routers import jobs
 
 
 class HealthResponse(BaseModel):
@@ -31,6 +33,9 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+install_error_handling(app)
+app.include_router(jobs.router)
 
 
 @app.get("/health", response_model=HealthResponse)

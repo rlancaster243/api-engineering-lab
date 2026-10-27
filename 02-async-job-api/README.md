@@ -3,7 +3,10 @@
 ## Progression
 
 1. **PR-2-00 (Foundation):** Done ([#11](https://github.com/rlancaster243/api-engineering-lab/pull/11)) — install, `DATABASE_URL`, Alembic, `GET /health`, CI postgres job.
-2. **PR-2-01 (next):** Job schema, `POST /v1/jobs` → 202, then worker and idempotency (see [Project 2 plan](../docs/plans/project-2-plan.md)).
+2. **PR-2-01 (Schema + submit):** Done — `jobs` table (ADR 0010), `POST /v1/jobs` → 202 after commit, `GET /v1/jobs/{id}`.
+3. **PR-2-02 (next):** Worker — claim/lease protocol, separate worker process.
+4. **PR-2-03:** Recovery — retries, lease expiry, crash falsification tests.
+5. **PR-2-04:** Idempotency — `Idempotency-Key` per ADR 0011.
 
 ## Run locally
 
@@ -15,6 +18,14 @@ uv sync --locked --extra dev
 uv run alembic upgrade head
 uv run uvicorn app.main:app --reload --port 8002
 curl http://127.0.0.1:8002/health
+
+# Submit a job
+curl -s -X POST http://127.0.0.1:8002/v1/jobs \
+  -H "Content-Type: application/json" \
+  -d '{"type": "echo", "payload": {"msg": "hello"}}' | jq .
+
+# Poll status (replace <id> with the returned id)
+curl -s http://127.0.0.1:8002/v1/jobs/<id> | jq .
 ```
 
 Postgres is published on host port **5433** to avoid clashing with Project 1 on 5432.
