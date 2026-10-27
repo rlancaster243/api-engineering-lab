@@ -33,6 +33,32 @@ def test_invalid_worker_poll_seconds_raises_config_error(value: str) -> None:
         load_settings({**BASE_ENVIRON, "WORKER_POLL_SECONDS": value})
 
 
+@pytest.mark.parametrize("value", ["inf", "Infinity", "-inf", "-Infinity", "1e400", "nan", "NaN"])
+def test_non_finite_worker_poll_seconds_raises_config_error(value: str) -> None:
+    """``float()`` accepts inf and nan; ``stop.wait(inf)`` then raises OverflowError.
+
+    The diagnostic must name the non-finite problem: a range message would send an
+    operator looking for the wrong mistake, and it is the isfinite guard, not the
+    upper bound, that rejects these.
+    """
+    with pytest.raises(ConfigError, match="WORKER_POLL_SECONDS") as raised:
+        load_settings({**BASE_ENVIRON, "WORKER_POLL_SECONDS": value})
+    assert "finite" in str(raised.value)
+
+
+@pytest.mark.parametrize("value", ["3601", "100000", "1e10"])
+def test_worker_poll_seconds_above_the_upper_bound_raises_config_error(value: str) -> None:
+    """A poll longer than an hour is a misconfiguration, not a poll interval."""
+    with pytest.raises(ConfigError, match="3600"):
+        load_settings({**BASE_ENVIRON, "WORKER_POLL_SECONDS": value})
+
+
+def test_worker_poll_seconds_accepts_the_upper_bound() -> None:
+    assert (
+        load_settings({**BASE_ENVIRON, "WORKER_POLL_SECONDS": "3600"}).worker_poll_seconds == 3600
+    )
+
+
 @pytest.mark.parametrize("value", ["0", "-5", "3600", "4000", "abc", "1.5"])
 def test_invalid_lease_seconds_raises_config_error(value: str) -> None:
     """LEASE_SECONDS must be an integer in (0, 3600) — the bound is exclusive."""

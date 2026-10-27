@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app import repository
 from app.db import create_session_factory
+from app.models import Job
 
 
 def new_session_factory(database_url: str) -> sessionmaker[Session]:
@@ -83,14 +84,19 @@ def read_job(engine: Engine, job_id: uuid.UUID) -> Any:
         return conn.execute(text("SELECT * FROM jobs WHERE id = :id"), {"id": job_id}).one()
 
 
-def claim_once(database_url: str, worker_id: str, lease_seconds: int = 60) -> uuid.UUID | None:
-    """Claim once on a fresh connection owned by the calling thread."""
+def claim_once(database_url: str, worker_id: str, lease_seconds: int = 60) -> Job | None:
+    """Claim once on a fresh connection owned by the calling thread.
+
+    Returns the claimed ``Job`` so callers work with the same type
+    ``repository.claim_next_job`` returns; a caller that only needs the id reads
+    ``job.id`` and cannot accidentally compare a ``Job`` against a ``UUID``.
+    """
     factory = new_session_factory(database_url)
     try:
         with factory() as session:
             job = repository.claim_next_job(session, worker_id, lease_seconds)
             session.commit()
-            return None if job is None else job.id
+            return job
     finally:
         dispose(factory)
 
@@ -124,14 +130,20 @@ def run_concurrently(*calls: Callable[[], Any]) -> list[BaseException | None]:
 
 
 class ClaimRecorder:
-    """Collects one claim result per worker from concurrent threads."""
+    """Collects one claim result per worker from concurrent threads.
+
+    ``claimed`` maps a worker id to the id of the job it won, or ``None``. The
+    recorder is the only place a claim's ``Job`` is reduced to an id, so callers
+    compare like with like.
+    """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self.claimed: dict[str, uuid.UUID | None] = {}
 
     def claim(self, database_url: str, worker_id: str, lease_seconds: int = 60) -> None:
-        job_id = claim_once(database_url, worker_id, lease_seconds)
+        job = claim_once(database_url, worker_id, lease_seconds)
+        job_id: uuid.UUID | None = None if job is None else job.id
         with self._lock:
             self.claimed[worker_id] = job_id
 

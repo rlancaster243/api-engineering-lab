@@ -6,11 +6,13 @@ work to interrupt.
 """
 
 from collections.abc import Callable
+from dataclasses import dataclass
 
 Handler = Callable[[dict], dict]
 
 MAX_ERROR_CHARS = 2000
 UNKNOWN_TYPE_MESSAGE = "no handler registered for type '{job_type}'"
+INVALID_RESULT_MESSAGE = "invalid handler result: expected dict, got {result_type}"
 
 
 def _echo(payload: dict) -> dict:
@@ -25,14 +27,49 @@ def resolve(job_type: str) -> Handler | None:
     return HANDLERS.get(job_type)
 
 
-def describe_failure(error: BaseException) -> str:
-    """Render a handler failure as ``"<ExceptionClass>: <message>"``, capped for the row.
+@dataclass(frozen=True)
+class FailureDetail:
+    """A failure split into a loggable class and a storable message.
 
-    Tracebacks go to logs, never into ``last_error``.
+    ``error_class`` is safe to log. ``last_error`` is handler-authored text that
+    may quote client data, so it belongs in the job row and nowhere else.
     """
-    return f"{type(error).__name__}: {error}"[:MAX_ERROR_CHARS]
+
+    error_class: str
+    last_error: str
 
 
-def unknown_type_error(job_type: str) -> str:
-    """The ``last_error`` for a job whose type has no registered handler."""
-    return UNKNOWN_TYPE_MESSAGE.format(job_type=job_type)[:MAX_ERROR_CHARS]
+def describe_failure(error: BaseException) -> FailureDetail:
+    """Split a raised exception into its class and ``"<class>: <message>"``, capped."""
+    error_class = type(error).__name__
+    return FailureDetail(
+        error_class=error_class,
+        last_error=f"{error_class}: {error}"[:MAX_ERROR_CHARS],
+    )
+
+
+def invalid_result_failure(result: object) -> FailureDetail:
+    """The failure for a handler that returned something other than a ``dict``."""
+    return FailureDetail(
+        error_class="InvalidHandlerResult",
+        last_error=INVALID_RESULT_MESSAGE.format(result_type=type(result).__name__)[
+            :MAX_ERROR_CHARS
+        ],
+    )
+
+
+def completion_failure(error: BaseException) -> FailureDetail:
+    """The failure for a SUCCEEDED result that could not be stored."""
+    detail = describe_failure(error)
+    return FailureDetail(
+        error_class=detail.error_class,
+        last_error=f"completion failed: {detail.last_error}"[:MAX_ERROR_CHARS],
+    )
+
+
+def unknown_type_failure(job_type: str) -> FailureDetail:
+    """The failure for a job whose type has no registered handler."""
+    return FailureDetail(
+        error_class="UnknownJobType",
+        last_error=UNKNOWN_TYPE_MESSAGE.format(job_type=job_type)[:MAX_ERROR_CHARS],
+    )

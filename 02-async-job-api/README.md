@@ -54,7 +54,10 @@ Each event is one JSON object on stdout:
 ```
 
 Events: `worker.started`, `worker.stopped`, `job.claimed`, `job.succeeded`,
-`job.failed`, `job.lease_lost`. Payloads and results are never logged.
+`job.failed`, `job.lease_lost`. Payloads and results are never logged, and neither
+is a handler's error message: `job.failed` carries `error_class` and
+`last_error_chars`, while the message itself is stored on the job row and served
+by `GET /v1/jobs/{id}`.
 
 ## Lint and test
 
@@ -74,7 +77,7 @@ Without `TEST_DATABASE_URL`, migration integration tests skip (CI postgres job s
 | `TEST_DATABASE_URL` | Disposable DB for integration tests |
 | `REQUIRE_DATABASE` | `1` fails CI if database tests are skipped |
 | `APP_ENV` | Reserved for later worker/API modes |
-| `WORKER_POLL_SECONDS` | Optional, default `1.0`. Worker sleep between empty polls; must be `> 0` |
+| `WORKER_POLL_SECONDS` | Optional, default `1.0`. Worker sleep between empty polls; must be finite, `> 0` and `<= 3600` |
 | `LEASE_SECONDS` | Optional, default `60`. Claim lease length; must be `> 0` and `< 3600` |
 
 `WORKER_POLL_SECONDS` and `LEASE_SECONDS` are read by the worker only. Invalid
@@ -87,6 +90,29 @@ There is **no lease expiry recovery yet**. A worker that crashes mid-job leaves
 the row `RUNNING` with a lease that expires and is then never reclaimed — the job
 is stuck until PR-2-03 adds recovery. `attempt` is consumed at claim time (ADR
 0010), so the crash is still recorded against the job's attempt budget.
+
+The worker survives a bad cycle rather than exiting: a claim that raises, a handler
+that raises or returns a non-object, and a result the database refuses to store are
+each logged as `error_class` and the loop polls again. Surviving is not recovering.
+A failure that repeats inside the worker's own cycle — after the row is already
+claimed — leaves that job `RUNNING`, holding an expired lease, and nothing sweeps
+it; the measured behaviour is one failure logged, the row left at its claimed
+`attempt`, and the worker idling until the next poll finds new work. That is the
+same gap as a crashed worker, and the same fix: the sweep in #17.
+
+`jobs.result` has no `jsonb_typeof(result) = 'object'` constraint: the worker
+refuses to store a non-object result, and `GET /v1/jobs/{id}` serves a non-object
+result as `null`, but a database-level guarantee needs a migration that this PR
+(already at `0003_job_leases`) does not carry.
+
+## Known limitation (logging)
+
+The worker logs no payload, no result, no handler error message and no traceback;
+failures are recorded as `error_class` alone. The HTTP error handlers in
+`app/errors.py` log an exception's stack frames and SQLSTATE but never its message,
+because psycopg's `DETAIL: Failing row contains (...)` quotes the submitted row.
+Frames name call sites, not values, so a database failure is diagnosable without
+echoing the request body.
 
 ## ADRs
 

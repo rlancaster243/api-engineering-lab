@@ -4,8 +4,11 @@ Run as ``uv run python -m app.worker``. One job at a time; concurrency comes fro
 running several worker processes against the same ``DATABASE_URL``, which is what
 ``FOR UPDATE SKIP LOCKED`` is for (ADR 0010).
 
-A worker that dies mid-job leaves the row ``RUNNING`` with an expired lease and no
-recovery — that gap is PR-2-03's, deliberately.
+A single cycle cannot take the process down: a claim that raises, a handler that
+raises or returns a non-object, and a result the database refuses are each logged
+and the loop polls again. There is no lease-expiry recovery in this PR — a worker
+killed mid-job still leaves its row ``RUNNING`` with a lease that expires and is
+never reclaimed; that sweep is #17. Attempts are consumed at claim time (ADR 0010).
 """
 
 import logging
@@ -16,7 +19,6 @@ import sys
 import threading
 import uuid
 
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app import handlers, repository
@@ -52,15 +54,30 @@ class Worker:
         self.logger = logger or logging.getLogger("async_job_api")
 
     def run_once(self) -> bool:
-        """Claim and process at most one job; ``True`` when a job was handled."""
+        """Claim and process at most one job; ``True`` when a job was handled.
+
+        Any exception from one cycle is logged and swallowed so the loop keeps
+        polling: ``BaseException`` is deliberately not caught, so SIGINT, SIGTERM and
+        a stop propagated as ``SystemExit`` still end the process.
+
+        The failure is logged as its class alone, with no traceback. A formatted
+        traceback repeats the exception message and source locals, and a claim
+        failure can surface a row value (a decode error quoting a payload field).
+        """
         try:
             job = self._claim()
-        except SQLAlchemyError:
-            self.logger.exception("claim failed; retrying on the next poll")
+            if job is None:
+                return False
+            self._process(job)
+        except Exception as error:
+            log_event(
+                self.logger,
+                "worker.cycle_failed",
+                _level=logging.ERROR,
+                worker_id=self.worker_id,
+                error_class=type(error).__name__,
+            )
             return False
-        if job is None:
-            return False
-        self._process(job)
         return True
 
     def _claim(self) -> Job | None:
@@ -88,19 +105,27 @@ class Worker:
                 job,
                 status=TERMINAL_FAILED,
                 result=None,
-                last_error=handlers.unknown_type_error(job.type),
+                failure=handlers.unknown_type_failure(job.type),
                 event="job.failed",
             )
             return
         try:
             result = handler(job.payload)
         except Exception as error:  # a handler failure must not kill the loop
-            self.logger.exception("handler raised worker_id=%s job_id=%s", self.worker_id, job.id)
             self._finish(
                 job,
                 status=TERMINAL_FAILED,
                 result=None,
-                last_error=handlers.describe_failure(error),
+                failure=handlers.describe_failure(error),
+                event="job.failed",
+            )
+            return
+        if not isinstance(result, dict):
+            self._finish(
+                job,
+                status=TERMINAL_FAILED,
+                result=None,
+                failure=handlers.invalid_result_failure(result),
                 event="job.failed",
             )
             return
@@ -108,9 +133,29 @@ class Worker:
             job,
             status=TERMINAL_SUCCEEDED,
             result=result,
-            last_error=None,
+            failure=None,
             event="job.succeeded",
         )
+
+    def _complete(
+        self,
+        job: Job,
+        *,
+        status: str,
+        result: dict | None,
+        last_error: str | None,
+    ) -> int:
+        with self._session_factory() as session:
+            rowcount = repository.complete_job(
+                session,
+                job_id=job.id,
+                worker_id=self.worker_id,
+                status=status,
+                result=result,
+                last_error=last_error,
+            )
+            session.commit()
+        return rowcount
 
     def _finish(
         self,
@@ -118,24 +163,26 @@ class Worker:
         *,
         status: str,
         result: dict | None,
-        last_error: str | None,
+        failure: handlers.FailureDetail | None,
         event: str,
     ) -> None:
         try:
-            with self._session_factory() as session:
-                rowcount = repository.complete_job(
-                    session,
-                    job_id=job.id,
-                    worker_id=self.worker_id,
-                    status=status,
-                    result=result,
-                    last_error=last_error,
-                )
-                session.commit()
-        except SQLAlchemyError:
-            self.logger.exception(
-                "completion failed worker_id=%s job_id=%s", self.worker_id, job.id
+            rowcount = self._complete(
+                job,
+                status=status,
+                result=result,
+                last_error=None if failure is None else failure.last_error,
             )
+        except Exception as error:
+            self._log_completion_error(job, error)
+            if status == TERMINAL_SUCCEEDED:
+                self._finish(
+                    job,
+                    status=TERMINAL_FAILED,
+                    result=None,
+                    failure=handlers.completion_failure(error),
+                    event="job.failed",
+                )
             return
 
         if rowcount == 0:
@@ -149,14 +196,29 @@ class Worker:
             )
             return
 
-        log_event(
-            self.logger,
-            event,
-            worker_id=self.worker_id,
-            job_id=str(job.id),
-            job_type=job.type,
-            attempt=job.attempt,
-            last_error=last_error,
+        fields: dict[str, object] = {
+            "worker_id": self.worker_id,
+            "job_id": str(job.id),
+            "job_type": job.type,
+            "attempt": job.attempt,
+        }
+        if failure is not None:
+            fields["error_class"] = failure.error_class
+            fields["last_error_chars"] = len(failure.last_error)
+        log_event(self.logger, event, **fields)
+
+    def _log_completion_error(self, job: Job, error: Exception) -> None:
+        """Log the class only.
+
+        SQLAlchemy's formatted traceback repeats the statement and its bound
+        parameters, and for a completion those hold the handler's result and the
+        ``last_error`` message — neither may reach a log line.
+        """
+        self.logger.error(
+            "completion failed worker_id=%s job_id=%s error_class=%s",
+            self.worker_id,
+            job.id,
+            type(error).__name__,
         )
 
     def run_forever(self, stop: threading.Event) -> None:

@@ -21,7 +21,8 @@ from pydantic import BaseModel
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.db_errors import is_service_unavailable
+from app.db_errors import is_service_unavailable, sqlstate
+from app.logging import stack_only
 
 logger = logging.getLogger(__name__)
 
@@ -146,7 +147,12 @@ async def _handle_http_exception(request: Request, exc: Exception) -> JSONRespon
 
 async def _handle_unexpected(request: Request, exc: Exception) -> JSONResponse:
     request_id = _request_id(request)
-    logger.error("unhandled exception request_id=%s", request_id, exc_info=exc)
+    logger.error(
+        "unhandled exception request_id=%s error_class=%s\n%s",
+        request_id,
+        type(exc).__name__,
+        stack_only(exc),
+    )
     return error_response(request, ErrorCode.INTERNAL_ERROR)
 
 
@@ -154,12 +160,27 @@ async def _handle_dbapi_error(request: Request, exc: Exception) -> JSONResponse:
     assert isinstance(exc, DBAPIError)
     request_id = _request_id(request)
     if isinstance(exc, IntegrityError):
-        logger.error("database integrity error request_id=%s", request_id, exc_info=exc)
+        logger.error(
+            "database integrity error request_id=%s sqlstate=%s\n%s",
+            request_id,
+            sqlstate(exc),
+            stack_only(exc),
+        )
         return error_response(request, ErrorCode.INTERNAL_ERROR)
     if is_service_unavailable(exc):
-        logger.warning("database unavailable request_id=%s", request_id, exc_info=exc)
+        logger.warning(
+            "database unavailable request_id=%s sqlstate=%s\n%s",
+            request_id,
+            sqlstate(exc),
+            stack_only(exc),
+        )
         return error_response(request, ErrorCode.SERVICE_UNAVAILABLE)
-    logger.error("database error request_id=%s", request_id, exc_info=exc)
+    logger.error(
+        "database error request_id=%s sqlstate=%s\n%s",
+        request_id,
+        sqlstate(exc),
+        stack_only(exc),
+    )
     return error_response(request, ErrorCode.INTERNAL_ERROR)
 
 
