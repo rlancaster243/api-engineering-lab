@@ -15,14 +15,17 @@ import threading
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from typing import get_type_hints
 
 import pytest
 from sqlalchemy import Engine, text
 from sqlalchemy.exc import IntegrityError
 
 from app import repository
+from app.models import Job
 from tests.db_helpers import (
     ClaimRecorder,
+    claim_once,
     clear_jobs,
     dispose,
     new_session_factory,
@@ -112,11 +115,20 @@ def test_claim_skips_row_locked_by_another_transaction(
     Worker A claims the oldest job and keeps its transaction open. Worker B, starting
     afterwards, must take the next job rather than waiting for A to commit — that is
     SKIP LOCKED; plain FOR UPDATE would block here.
+
+    Both workers are built the same way — own factory, own connection, disposed by
+    the test body once both threads are done — so neither can quietly borrow the
+    other's connection and make the race unfalsifiable.
     """
     first = seed_job(migrated_engine, created_at=datetime.now(UTC) - timedelta(minutes=2))
     second = seed_job(migrated_engine, created_at=datetime.now(UTC) - timedelta(minutes=1))
 
-    holder_factory = new_session_factory(database_url)
+    factory_a = new_session_factory(database_url)
+    factory_b = new_session_factory(database_url)
+    assert factory_a.kw["bind"] is not factory_b.kw["bind"], (
+        "the two claimers must not share an engine"
+    )
+
     claimed_by_a: list[uuid.UUID | None] = []
     claimed_by_b: list[uuid.UUID | None] = []
     a_has_claimed = threading.Event()
@@ -124,7 +136,7 @@ def test_claim_skips_row_locked_by_another_transaction(
 
     def worker_a() -> None:
         try:
-            with holder_factory() as session:
+            with factory_a() as session:
                 claim = repository.claim_next_job(session, "worker-a", 60)
                 claimed_by_a.append(None if claim is None else claim[0].id)
                 a_has_claimed.set()
@@ -135,7 +147,7 @@ def test_claim_skips_row_locked_by_another_transaction(
 
     def worker_b() -> None:
         assert a_has_claimed.wait(timeout=BLOCK_TIMEOUT_SECONDS)
-        with new_session_factory(database_url)() as session:
+        with factory_b() as session:
             claim = repository.claim_next_job(session, "worker-b", 60)
             claimed_by_b.append(None if claim is None else claim[0].id)
             session.commit()
@@ -154,11 +166,48 @@ def test_claim_skips_row_locked_by_another_transaction(
     finally:
         release_a.set()
         thread_a.join(timeout=BLOCK_TIMEOUT_SECONDS)
-        dispose(holder_factory)
+        thread_b.join(timeout=BLOCK_TIMEOUT_SECONDS)
+        dispose(factory_a)
+        dispose(factory_b)
 
     assert not thread_a.is_alive()
+    assert not thread_b.is_alive()
     assert claimed_by_a == [first]
     assert claimed_by_b == [second]
+
+
+def test_claim_once_returns_a_job_so_ids_are_never_compared_to_jobs(
+    database_url: str, migrated_engine: Engine
+) -> None:
+    """``claim_once`` must hand back ``(Job, kind) | None``, not a bare id.
+
+    The concurrency gate compares recorded claim results against seeded UUIDs. If the
+    helper returned anything other than the repository's own ``Job``, those
+    comparisons could silently never match and the gate would pass without testing
+    anything.
+    """
+    job_id = seed_job(migrated_engine)
+    claim = claim_once(database_url, "worker-typed")
+
+    assert claim is not None
+    claimed, kind = claim
+    assert isinstance(claimed, Job), f"expected a Job, got {type(claimed).__name__}"
+    assert isinstance(claimed.id, uuid.UUID)
+    assert claimed.id == job_id
+    assert kind == "pending"
+    assert claim_once(database_url, "worker-typed") is None
+
+
+def test_claim_helpers_are_annotated_with_the_repository_return_type() -> None:
+    """The helper annotations must match ``claim_next_job`` so a checker agrees.
+
+    mypy is not a project dependency, so the annotation is asserted directly rather
+    than left to a type checker nobody runs.
+    """
+    expected = get_type_hints(repository.claim_next_job)["return"]
+    assert get_type_hints(claim_once)["return"] == expected
+    assert get_type_hints(ClaimRecorder.claim)["return"] is type(None)
+    assert get_type_hints(ClaimRecorder.__init__)["return"] is type(None)
 
 
 # ---------------------------------------------------------------------------

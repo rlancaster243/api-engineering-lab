@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app import repository
 from app.db import create_session_factory
+from app.models import Job
 
 
 def new_session_factory(database_url: str) -> sessionmaker[Session]:
@@ -88,21 +89,20 @@ def read_job(engine: Engine, job_id: uuid.UUID) -> Any:
 
 def claim_once(
     database_url: str, worker_id: str, lease_seconds: int = 60
-) -> tuple[uuid.UUID | None, str | None]:
+) -> tuple[Job, repository.ClaimKind] | None:
     """Claim once on a fresh connection owned by the calling thread.
 
-    Returns ``(job_id, kind)`` where ``kind`` is ``"reclaimed"`` or ``"pending"``,
-    or ``(None, None)`` when nothing was claimable.
+    Returns the claimed ``Job`` and its ``kind`` (``"reclaimed"`` or ``"pending"``)
+    so callers work with the same types ``repository.claim_next_job`` returns; a
+    caller that only needs the id reads ``claim[0].id`` and cannot accidentally
+    compare a ``Job`` against a ``UUID``. ``None`` when nothing was claimable.
     """
     factory = new_session_factory(database_url)
     try:
         with factory() as session:
             claim = repository.claim_next_job(session, worker_id, lease_seconds)
             session.commit()
-            if claim is None:
-                return None, None
-            job, kind = claim
-            return job.id, kind
+            return claim
     finally:
         dispose(factory)
 
@@ -136,7 +136,12 @@ def run_concurrently(*calls: Callable[[], Any]) -> list[BaseException | None]:
 
 
 class ClaimRecorder:
-    """Collects one claim result per worker from concurrent threads."""
+    """Collects one claim result per worker from concurrent threads.
+
+    ``claimed`` maps a worker id to the id of the job it won, or ``None``. The
+    recorder is the only place a claim's ``Job`` is reduced to an id, so callers
+    compare like with like.
+    """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -144,7 +149,12 @@ class ClaimRecorder:
         self.kinds: dict[str, str | None] = {}
 
     def claim(self, database_url: str, worker_id: str, lease_seconds: int = 60) -> None:
-        job_id, kind = claim_once(database_url, worker_id, lease_seconds)
+        claim = claim_once(database_url, worker_id, lease_seconds)
+        job_id: uuid.UUID | None = None
+        kind: repository.ClaimKind | None = None
+        if claim is not None:
+            job_id = claim[0].id
+            kind = claim[1]
         with self._lock:
             self.claimed[worker_id] = job_id
             self.kinds[worker_id] = kind

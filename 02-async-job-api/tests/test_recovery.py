@@ -59,6 +59,16 @@ def session_factory(database_url: str) -> Iterator[sessionmaker[Session]]:
     dispose(factory)
 
 
+def logged_records(stream: io.StringIO) -> list[dict]:
+    """Parse every JSON line the worker emitted."""
+    return [json.loads(line) for line in stream.getvalue().splitlines() if line.strip()]
+
+
+def logged_events(stream: io.StringIO) -> list[dict]:
+    """Parse the JSON-lines log, keeping only records that carry an event name."""
+    return [record for record in logged_records(stream) if record.get("event")]
+
+
 def expire_lease(engine: Engine, job_id: uuid.UUID, *, minutes: int = 5) -> None:
     """Backdate a lease instead of sleeping through LEASE_SECONDS."""
     with engine.connect() as conn:
@@ -206,11 +216,7 @@ def test_recovery_emits_job_recovered_event(migrated_engine: Engine, database_ur
     finally:
         logger.handlers.clear()
 
-    events = [
-        json.loads(line)
-        for line in stream.getvalue().splitlines()
-        if line.strip() and json.loads(line).get("event")
-    ]
+    events = logged_events(stream)
     recovered = [e for e in events if e["event"] == "job.recovered"]
     assert len(recovered) == 1
     assert recovered[0]["job_id"] == str(job_id)
@@ -317,9 +323,10 @@ def test_reclaim_is_served_before_a_busy_pending_queue(
     for _ in range(3):
         seed_job(migrated_engine, created_at=datetime.now(UTC) - timedelta(minutes=10))
 
-    claimed, kind = claim_once(database_url, "worker-reclaimer")
-    assert claimed == expired, "the reclaim probe must run before the pending probe"
-    assert kind == "reclaimed"
+    claim = claim_once(database_url, "worker-reclaimer")
+    assert claim is not None, "the reclaim probe must run before the pending probe"
+    assert claim[0].id == expired, "the reclaim probe must run before the pending probe"
+    assert claim[1] == "reclaimed"
 
 
 # ---------------------------------------------------------------------------
@@ -356,8 +363,8 @@ def test_requeue_sets_backoff_and_is_not_immediately_claimable(
     assert row.last_error == "RuntimeError: boom"
     assert row.next_attempt_at > datetime.now(UTC), "the retry must be deferred"
 
-    claimed, _ = claim_once(database_url, "worker-b")
-    assert claimed is None, "a backed-off job was claimed immediately"
+    claim = claim_once(database_url, "worker-b")
+    assert claim is None, "a backed-off job was claimed immediately"
 
 
 def test_requeued_job_is_claimable_once_due(migrated_engine: Engine, database_url: str) -> None:
@@ -368,9 +375,10 @@ def test_requeued_job_is_claimable_once_due(migrated_engine: Engine, database_ur
             {"id": job_id},
         )
         conn.commit()
-    claimed, kind = claim_once(database_url, "worker-due")
-    assert claimed == job_id
-    assert kind == "pending"
+    claim = claim_once(database_url, "worker-b")
+    assert claim is not None, "a due requeued job must be claimable"
+    assert claim[0].id == job_id
+    assert claim[1] == "pending"
     assert read_job(migrated_engine, job_id).attempt == 2
 
 
@@ -398,7 +406,7 @@ def test_failure_at_last_attempt_is_terminal(migrated_engine: Engine, database_u
     assert row.finished_at is not None
     assert row.lease_owner is None
 
-    assert claim_once(database_url, "worker-b") == (None, None)
+    assert claim_once(database_url, "worker-b") is None
 
 
 def test_fail_attempt_from_a_worker_that_lost_the_lease_changes_nothing(
@@ -457,6 +465,80 @@ def test_backoff_prevents_a_poison_job_from_starving_the_queue(
         dispose(factory)
 
 
+def test_failure_recording_survives_a_non_database_error(
+    migrated_engine: Engine, database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-``SQLAlchemyError`` from the failure write must not escape the loop.
+
+    ``_fail`` writes through the session, so the failure path can raise whatever a
+    broken connection or a monkeypatched callable raises — not just
+    ``SQLAlchemyError``. Catching only ``SQLAlchemyError`` here would let a
+    ``TypeError`` out of ``_process`` and end ``run_forever``, which is the
+    process-death regression PR-2-02 closed for the claim.
+    """
+    job_id = seed_job(migrated_engine, job_type="boom", max_attempts=3)
+    stream = io.StringIO()
+    logger = configure_logging(stream)
+
+    def _boom(payload: dict) -> dict:
+        raise RuntimeError("handler exploded")
+
+    def _broken_fail_attempt(*args: object, **kwargs: object) -> object:
+        raise TypeError("fail_attempt blew up in a way SQLAlchemy knows nothing about")
+
+    monkeypatch.setitem(worker_module.handlers.HANDLERS, "boom", _boom)
+    monkeypatch.setattr(repository, "fail_attempt", _broken_fail_attempt)
+
+    factory = new_session_factory(database_url)
+    try:
+        assert run_once(factory, worker_id="w", logger=logger) is True
+    finally:
+        dispose(factory)
+        logger.handlers.clear()
+
+    # Logged as a class, with no traceback and no handler message. The write-error
+    # line is a formatted message rather than an event, so match on its text.
+    errors = [record for record in logged_records(stream) if record["level"] == "error"]
+    assert errors, "a surviving failure-write error must still be logged"
+    assert "error_class=TypeError" in errors[-1]["message"]
+    assert "exception" not in errors[-1], "a failure write must not log a traceback"
+    assert "handler exploded" not in stream.getvalue()
+    assert "blew up in a way SQLAlchemy knows nothing about" not in stream.getvalue()
+
+    # The row keeps the state a crashed worker would leave, and the next sweep
+    # recovers it rather than the job sitting RUNNING forever.
+    row = read_job(migrated_engine, job_id)
+    assert row.status == "RUNNING"
+    assert row.lease_owner == "w"
+
+    monkeypatch.undo()
+    with migrated_engine.connect() as conn:
+        conn.execute(
+            text("UPDATE jobs SET lease_expires_at = now() - interval '5 minutes' WHERE id = :id"),
+            {"id": job_id},
+        )
+        conn.commit()
+
+    recovered_stream = io.StringIO()
+    recovered_logger = configure_logging(recovered_stream)
+    monkeypatch.setitem(
+        worker_module.handlers.HANDLERS, "boom", lambda payload: {"recovered": True}
+    )
+
+    factory = new_session_factory(database_url)
+    try:
+        assert run_once(factory, worker_id="w", logger=recovered_logger) is True
+    finally:
+        dispose(factory)
+        recovered_logger.handlers.clear()
+
+    recovered = read_job(migrated_engine, job_id)
+    assert recovered.status == "SUCCEEDED", "the stuck row was never recovered"
+    assert recovered.attempt == 2, "the reclaim must charge a second attempt"
+    names = [record["event"] for record in logged_events(recovered_stream)]
+    assert "job.recovered" in names, "the takeover must be logged as a recovery"
+
+
 def test_success_is_terminal_despite_remaining_attempts(
     migrated_engine: Engine, database_url: str
 ) -> None:
@@ -503,15 +585,19 @@ def test_worker_logs_retrying_then_succeeded(
         dispose(factory)
         logger.handlers.clear()
 
-    events = [
-        json.loads(line)
-        for line in stream.getvalue().splitlines()
-        if line.strip() and json.loads(line).get("event")
-    ]
+    events = logged_events(stream)
     names = [e["event"] for e in events]
     assert "job.retrying" in names
     assert "job.succeeded" in names
     assert read_job(migrated_engine, job_id).status == "SUCCEEDED"
+
+    retrying = [e for e in events if e["event"] == "job.retrying"]
+    assert len(retrying) == 1
+    assert retrying[0]["error_class"] == "RuntimeError"
+    assert "last_error" not in retrying[0], "the handler message must not be logged"
+    assert retrying[0]["last_error_chars"] == len("RuntimeError: first attempt fails"), (
+        "the log reports the message length, not the message"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -568,8 +654,17 @@ def test_sweep_leaves_budget_left_rows_alone(migrated_engine: Engine, database_u
 def test_sweep_failure_does_not_stop_the_worker(
     migrated_engine: Engine, database_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A sweep DB error is logged and the claim still runs."""
-    seed_job(migrated_engine, payload={})
+    """A sweep DB error is logged and the claim still runs.
+
+    ``_sweep`` contains its own ``SQLAlchemyError`` and returns, so the cycle
+    continues to the claim. The job completing is the evidence that containment
+    happened at the sweep and not at the outer cycle guard — if the outer guard
+    had caught it, ``run_once`` would have returned ``False`` and left the job
+    ``PENDING``.
+    """
+    job_id = seed_job(migrated_engine, payload={})
+    stream = io.StringIO()
+    logger = configure_logging(stream)
 
     def _explode(session: Session) -> list[tuple[uuid.UUID, int]]:
         raise worker_module.SQLAlchemyError("sweep blew up")
@@ -578,6 +673,57 @@ def test_sweep_failure_does_not_stop_the_worker(
 
     factory = new_session_factory(database_url)
     try:
-        assert run_once(factory, worker_id="w") is True
+        assert run_once(factory, worker_id="w", logger=logger) is True
     finally:
         dispose(factory)
+        logger.handlers.clear()
+
+    assert read_job(migrated_engine, job_id).status == "SUCCEEDED"
+    records = logged_events(stream)
+    names = [record["event"] for record in records]
+    assert "job.succeeded" in names, "the claim must run after a failed sweep"
+    assert "worker.cycle_failed" not in names, "the sweep contains its own error"
+
+
+def test_non_database_sweep_error_is_contained_by_the_cycle_guard(
+    migrated_engine: Engine, database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unexpected sweep error is contained like any other cycle failure.
+
+    ``_sweep`` catches ``SQLAlchemyError`` only. The sweep sits inside
+    ``run_once``'s guard, so a non-database error from it logs
+    ``worker.cycle_failed`` and the loop polls again instead of the process dying
+    — the same containment a claim failure gets.
+    """
+    job_id = seed_job(migrated_engine, payload={})
+    stream = io.StringIO()
+    logger = configure_logging(stream)
+
+    def _explode(session: Session) -> list[tuple[uuid.UUID, int]]:
+        raise TypeError("sweep blew up in a way SQLAlchemy knows nothing about")
+
+    monkeypatch.setattr(repository, "sweep_expired", _explode)
+
+    factory = new_session_factory(database_url)
+    try:
+        assert run_once(factory, worker_id="w", logger=logger) is False
+    finally:
+        dispose(factory)
+        logger.handlers.clear()
+
+    records = logged_events(stream)
+    assert records[-1]["event"] == "worker.cycle_failed"
+    assert records[-1]["error_class"] == "TypeError"
+    assert "exception" not in records[-1], "a cycle failure must not log a traceback"
+    assert read_job(migrated_engine, job_id).status == "PENDING", "the job was not claimed"
+
+    # The next poll, with the sweep healthy again, drains the queue.
+    monkeypatch.undo()
+    factory = new_session_factory(database_url)
+    try:
+        assert run_once(factory, worker_id="w", logger=logger) is True
+    finally:
+        dispose(factory)
+        logger.handlers.clear()
+
+    assert read_job(migrated_engine, job_id).status == "SUCCEEDED"

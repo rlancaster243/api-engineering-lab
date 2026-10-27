@@ -194,6 +194,190 @@ def test_claim_database_error_does_not_raise(log_stream: io.StringIO) -> None:
         engine.dispose()
 
 
+def test_non_database_error_during_claim_does_not_kill_the_worker(
+    session_factory: sessionmaker[Session],
+    migrated_engine: Engine,
+    log_stream: io.StringIO,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Any exception from a cycle is survivable, not just ``SQLAlchemyError``.
+
+    A ``TypeError`` escaping the claim used to propagate out of ``run_forever`` and
+    kill the process, so the queue stopped draining.
+    """
+    job_id = seed_job(migrated_engine)
+
+    def _broken_claim(session: Session, worker_id: str, lease_seconds: int) -> Any:
+        raise TypeError("claim blew up in a way SQLAlchemy knows nothing about")
+
+    monkeypatch.setattr(worker_module.repository, "claim_next_job", _broken_claim)
+
+    assert run_once(session_factory, worker_id="worker-typeerror") is False
+
+    errors = [event for event in logged_events(log_stream) if event["level"] == "error"]
+    assert errors, "a surviving cycle failure must still be logged"
+    assert errors[-1]["event"] == "worker.cycle_failed"
+    assert errors[-1]["error_class"] == "TypeError"
+    assert "exception" not in errors[-1], "a cycle failure must not log a traceback"
+
+    monkeypatch.undo()
+    assert run_once(session_factory, worker_id="worker-recovered") is True
+    assert read_job(migrated_engine, job_id).status == "SUCCEEDED"
+
+
+def test_claim_failure_message_never_reaches_the_logs(
+    session_factory: sessionmaker[Session],
+    migrated_engine: Engine,
+    log_stream: io.StringIO,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A secret in a claim exception must not reach the logs via a traceback.
+
+    A claim failure can surface a row value — a decode error quoting a payload
+    field, for example — so the cycle-failure path logs the class alone and never
+    a formatted traceback.
+    """
+    secret = "row-decode-key-9f3c1a7b"
+
+    def _broken_claim(session: Session, worker_id: str, lease_seconds: int) -> Any:
+        raise RuntimeError(f"decode failed for row with key {secret}")
+
+    monkeypatch.setattr(worker_module.repository, "claim_next_job", _broken_claim)
+
+    assert run_once(session_factory, worker_id="worker-claim-leak") is False
+
+    output = log_stream.getvalue()
+    assert secret not in output, "a claim exception message reached the logs"
+    assert "decode failed for row" not in output, "the message reached the logs"
+
+    records = logged_events(log_stream)
+    assert records, "the surviving failure must still be logged"
+    assert records[-1]["event"] == "worker.cycle_failed"
+    assert records[-1]["error_class"] == "RuntimeError"
+    assert "exception" not in records[-1], "a cycle failure must not log a traceback"
+
+
+def test_run_forever_survives_a_non_database_claim_error(
+    session_factory: sessionmaker[Session],
+    migrated_engine: Engine,
+    log_stream: io.StringIO,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The loop itself keeps polling after a non-SQLAlchemy claim failure."""
+    job_id = seed_job(migrated_engine)
+    stop = threading.Event()
+    failures = 0
+    real_claim = worker_module.repository.claim_next_job
+
+    def _flaky_claim(session: Session, worker_id: str, lease_seconds: int) -> Any:
+        nonlocal failures
+        if failures == 0:
+            failures += 1
+            raise TypeError("first poll raises")
+        return real_claim(session, worker_id, lease_seconds)
+
+    monkeypatch.setattr(worker_module.repository, "claim_next_job", _flaky_claim)
+
+    worker = Worker(session_factory, lease_seconds=60, poll_seconds=0.01, worker_id="worker-flaky")
+    thread = threading.Thread(target=worker.run_forever, args=(stop,), daemon=True)
+    thread.start()
+    try:
+        assert _wait_until(lambda: _count(migrated_engine, "SUCCEEDED") == 1), (
+            "the loop died on a non-SQLAlchemy claim error"
+        )
+    finally:
+        stop.set()
+        thread.join(timeout=10)
+
+    assert not thread.is_alive()
+    assert read_job(migrated_engine, job_id).status == "SUCCEEDED"
+
+
+# ---------------------------------------------------------------------------
+# Handler result contract
+# ---------------------------------------------------------------------------
+
+
+def test_non_dict_handler_result_fails_job_and_worker_survives(
+    session_factory: sessionmaker[Session],
+    migrated_engine: Engine,
+    log_stream: io.StringIO,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A handler returning a list must fail the job, not strand it RUNNING.
+
+    Under PR-2-03 semantics "fail" means the failure is recorded, so a non-object
+    result consumes the attempt budget: the first failure requeues, and the job
+    terminates FAILED once the budget is gone. Either way the row never sits
+    RUNNING with a live lease, and the next job still runs.
+    """
+    bad_id = seed_job(migrated_engine, job_type="returns.list", payload={})
+    following_id = seed_job(migrated_engine, payload={"ok": True})
+
+    def _returns_list(payload: dict) -> Any:
+        return [1, 2, 3]
+
+    monkeypatch.setitem(worker_module.handlers.HANDLERS, "returns.list", _returns_list)
+
+    assert run_once(session_factory, worker_id="worker-badresult") is True
+
+    requeued = read_job(migrated_engine, bad_id)
+    assert requeued.status == "PENDING", "a non-object result must be recorded, not ignored"
+    assert requeued.last_error == "invalid handler result: expected dict, got list"
+    assert requeued.result is None
+    assert requeued.finished_at is None
+    assert requeued.lease_owner is None
+
+    # The healthy job is served while the bad one is backed off.
+    assert run_once(session_factory, worker_id="worker-badresult") is True
+    assert read_job(migrated_engine, following_id).status == "SUCCEEDED"
+
+    # Clear the backoff and spend the remaining attempts: the job must terminate.
+    for _ in range(2):
+        with migrated_engine.connect() as conn:
+            conn.execute(
+                text("UPDATE jobs SET next_attempt_at = now() WHERE id = :id"), {"id": bad_id}
+            )
+            conn.commit()
+        assert run_once(session_factory, worker_id="worker-badresult") is True
+
+    exhausted = read_job(migrated_engine, bad_id)
+    assert exhausted.status == "FAILED"
+    assert exhausted.finished_at is not None
+    assert exhausted.lease_owner is None
+
+
+def test_non_serialisable_result_fails_job_instead_of_stranding_it(
+    session_factory: sessionmaker[Session],
+    migrated_engine: Engine,
+    log_stream: io.StringIO,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dict holding a set cannot reach jsonb; the job must land FAILED, not RUNNING."""
+    job_id = seed_job(migrated_engine, job_type="returns.set", payload={})
+
+    def _returns_set(payload: dict) -> dict:
+        return {"values": {1, 2, 3}}
+
+    monkeypatch.setitem(worker_module.handlers.HANDLERS, "returns.set", _returns_set)
+
+    assert run_once(session_factory, worker_id="worker-unserialisable") is True
+
+    row = read_job(migrated_engine, job_id)
+    assert row.status == "FAILED", "an unstorable result left the job RUNNING"
+    assert row.result is None
+    assert row.lease_owner is None
+    assert row.finished_at is not None
+    assert row.last_error is not None
+    assert row.last_error.startswith("completion failed: TypeError")
+
+    failed_events = [
+        event for event in logged_events(log_stream) if event.get("event") == "job.failed"
+    ]
+    assert len(failed_events) == 1
+    assert failed_events[0]["error_class"] == "TypeError"
+
+
 # ---------------------------------------------------------------------------
 # Loop behaviour and shutdown
 # ---------------------------------------------------------------------------
@@ -365,6 +549,108 @@ def test_every_event_carries_worker_id(
     assert events
     for event in events:
         assert event.get("worker_id") == "worker-keys", event
+
+
+def test_handler_failure_message_never_reaches_the_logs(
+    session_factory: sessionmaker[Session],
+    migrated_engine: Engine,
+    log_stream: io.StringIO,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A secret quoted in an exception message stays out of stdout, but not out of the row.
+
+    The message is handler-authored text: it is the operator's debugging signal in
+    ``jobs.last_error`` and must never be written to a log line. Checked on both
+    failure events: ``job.retrying`` while the budget lasts and ``job.failed`` at
+    the end, since PR-2-03 sends a handler failure through the retry path.
+    """
+    secret = "sk-live-9f3c1a7b2e"
+    job_id = seed_job(
+        migrated_engine, job_type="leaky", payload={"api_key": secret}, max_attempts=1
+    )
+
+    def _leaky(payload: dict) -> dict:
+        raise RuntimeError(f"rejected key {payload['api_key']}")
+
+    monkeypatch.setitem(worker_module.handlers.HANDLERS, "leaky", _leaky)
+
+    assert run_once(session_factory, worker_id="worker-leaky") is True
+
+    output = log_stream.getvalue()
+    assert secret not in output, "an exception message reached the logs"
+    assert "rejected key" not in output, "handler message text reached the logs"
+
+    row = read_job(migrated_engine, job_id)
+    assert row.status == "FAILED"
+    assert row.last_error == f"RuntimeError: rejected key {secret}"
+
+    failed_events = [
+        event for event in logged_events(log_stream) if event.get("event") == "job.failed"
+    ]
+    assert len(failed_events) == 1
+    assert failed_events[0]["error_class"] == "RuntimeError"
+    assert failed_events[0]["last_error_chars"] == len(row.last_error)
+    assert "last_error" not in failed_events[0]
+
+
+def test_handler_failure_retry_event_carries_class_and_length_only(
+    session_factory: sessionmaker[Session],
+    migrated_engine: Engine,
+    log_stream: io.StringIO,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The requeue event must obey the same rule as the terminal one.
+
+    PR-2-03 made a handler failure requeue while budget remains, which moved the
+    failure event from ``job.failed`` to ``job.retrying``. The security contract
+    does not move with it: ``job.retrying`` reports class and message length, and
+    the message stays on the row.
+    """
+    secret = "sk-live-retry-77c2"
+    job_id = seed_job(migrated_engine, job_type="leaky-retry", payload={"api_key": secret})
+
+    def _leaky(payload: dict) -> dict:
+        raise RuntimeError(f"rejected key {payload['api_key']}")
+
+    monkeypatch.setitem(worker_module.handlers.HANDLERS, "leaky-retry", _leaky)
+
+    assert run_once(session_factory, worker_id="worker-leaky-retry") is True
+
+    output = log_stream.getvalue()
+    assert secret not in output, "an exception message reached the logs on the retry path"
+    assert "rejected key" not in output, "handler message text reached the logs"
+
+    row = read_job(migrated_engine, job_id)
+    assert row.status == "PENDING"
+    assert row.last_error == f"RuntimeError: rejected key {secret}"
+
+    retrying = [
+        event for event in logged_events(log_stream) if event.get("event") == "job.retrying"
+    ]
+    assert len(retrying) == 1
+    assert retrying[0]["error_class"] == "RuntimeError"
+    assert retrying[0]["last_error_chars"] == len(row.last_error)
+    assert "last_error" not in retrying[0]
+    assert retrying[0]["backoff_seconds"] > 0
+
+
+def test_non_serialisable_result_does_not_leak_payload_or_result_to_logs(
+    session_factory: sessionmaker[Session],
+    migrated_engine: Engine,
+    log_stream: io.StringIO,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The failed completion must not log SQLAlchemy's parameter dump of the result."""
+    secret = "result-secret-4411"
+    seed_job(migrated_engine, job_type="returns.opaque", payload={"k": secret})
+
+    def _returns_opaque(payload: dict) -> dict:
+        return {"secret": secret, "values": {1, 2}}
+
+    monkeypatch.setitem(worker_module.handlers.HANDLERS, "returns.opaque", _returns_opaque)
+
+    assert run_once(session_factory, worker_id="worker-opaque") is True
+    assert secret not in log_stream.getvalue()
 
 
 # ---------------------------------------------------------------------------
