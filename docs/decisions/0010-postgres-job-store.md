@@ -2,7 +2,12 @@
 
 ## Status
 
-Proposed
+Accepted
+
+Accepting because PR-2-02 lands the code that implements this decision: the
+`0003_job_leases` migration, the `FOR UPDATE SKIP LOCKED` claim in
+`02-async-job-api/app/repository.py`, and the separate worker process in
+`app/worker.py`. Owner authorization was given for this transition.
 
 ## Context
 
@@ -26,6 +31,15 @@ Project 2 needs durable job state, worker claims, and client status queries. Int
 
 - Polling and claim traffic load PostgreSQL; acceptable at lab scale.
 - Not a substitute for high-throughput queue products.
+- **`attempt` is consumed at claim time, not at completion.** The claim statement
+  increments `attempt` in the same transaction that sets `RUNNING`, so a worker
+  that crashes mid-job has already spent an attempt even though it produced no
+  result. This is deliberate: it makes a crash-looping job terminate instead of
+  retrying forever, and it keeps the attempt counter honest about how many times
+  work was actually started. The cost is that a crash can exhaust a job's attempts
+  without the work ever completing — acceptable only because PR-2-03 adds lease
+  expiry recovery, and a stuck job is visible as `RUNNING` with an expired lease
+  rather than silently vanishing.
 
 ## References
 
