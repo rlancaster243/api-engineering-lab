@@ -2,10 +2,11 @@
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, event
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-from app.ready import database_is_ready
+from app.db import create_session_factory
 from tests.conftest import MintToken
 
 
@@ -32,20 +33,42 @@ def test_ready_returns_503_when_database_is_unavailable(
     assert response.json()["error"]["code"] == "SERVICE_UNAVAILABLE"
 
 
-def test_ready_performs_a_query_not_a_pool_heuristic(
-    api: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Gate E regression guard: readiness must not trust pool metadata alone."""
-    calls: list[str] = []
-    original = database_is_ready
+def test_ready_returns_503_against_a_real_unreachable_database(api: TestClient) -> None:
+    """No patching of the probe: a dead database must surface as 503, sanitized."""
+    original_factory = api.app.state.session_factory
+    dead_engine = create_engine(
+        "postgresql+psycopg://u:p@127.0.0.1:1/x", connect_args={"connect_timeout": 1}
+    )
+    try:
+        api.app.state.session_factory = create_session_factory(dead_engine)
+        response = api.get("/ready")
+    finally:
+        api.app.state.session_factory = original_factory
+        dead_engine.dispose()
+    assert response.status_code == 503
+    error = response.json()["error"]
+    assert error["code"] == "SERVICE_UNAVAILABLE"
+    assert error["request_id"]
+    body = response.text.lower()
+    for leaked in ("127.0.0.1", "psycopg", "connection", "refused"):
+        assert leaked not in body
 
-    def instrumented(session: Session) -> None:
-        calls.append("probe")
-        original(session)
 
-    monkeypatch.setattr("app.main.database_is_ready", instrumented)
-    assert api.get("/ready").status_code == 200
-    assert calls == ["probe"]
+def test_ready_executes_select_1_on_the_apps_engine(api: TestClient) -> None:
+    """Readiness must run SQL; pool metadata alone cannot satisfy this."""
+    engine = api.app.state.session_factory.kw["bind"]
+    statements: list[str] = []
+
+    def capture(conn, cursor, statement, parameters, context, executemany) -> None:  # noqa: ANN001
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        response = api.get("/ready")
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+    assert response.status_code == 200
+    assert any(s.strip().upper() == "SELECT 1" for s in statements), statements
 
 
 def test_ready_rejects_post(api: TestClient) -> None:
