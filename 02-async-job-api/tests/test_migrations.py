@@ -51,7 +51,7 @@ def test_migration_round_trip(migrated_database_url: str) -> None:
 
         with engine.connect() as conn:
             version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-            assert version == "0004_job_retry"
+            assert version == "0005_job_effects"
             result = conn.execute(
                 text(
                     "SELECT table_name FROM information_schema.tables "
@@ -71,7 +71,7 @@ def test_migration_round_trip(migrated_database_url: str) -> None:
 def test_migration_upgrade_from_clean_database(migrated_engine: Engine) -> None:
     with migrated_engine.connect() as connection:
         version = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-    assert version == "0004_job_retry"
+    assert version == "0005_job_effects"
 
 
 def test_jobs_table_exists(migrated_engine: Engine) -> None:
@@ -210,7 +210,7 @@ def test_lease_columns_downgrade_cleanly(migrated_database_url: str) -> None:
 
     with create_engine(sqlalchemy_url(migrated_database_url)).connect() as conn:
         version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-    assert version == "0004_job_retry"
+    assert version == "0005_job_effects"
 
 
 def test_0004_adds_next_attempt_at(migrated_engine: Engine) -> None:
@@ -283,3 +283,39 @@ def test_0004_backfill_matches_created_at(migrated_database_url: str) -> None:
             drop.execute(f'DROP DATABASE "{scratch_name}" WITH (FORCE)')
         finally:
             drop.close()
+
+
+def test_0005_creates_job_effects_with_partial_index(migrated_engine: Engine) -> None:
+    """The outbox table, its composite key and its pending-only index must exist."""
+    with migrated_engine.connect() as connection:
+        columns = dict(
+            connection.execute(
+                text(
+                    "SELECT column_name, is_nullable FROM information_schema.columns "
+                    "WHERE table_schema = 'public' AND table_name = 'job_effects'"
+                )
+            ).all()
+        )
+    for column in ("job_id", "effect_key", "status", "detail", "created_at", "applied_at"):
+        assert column in columns, f"0005_job_effects did not create {column}"
+    assert columns["status"] == "NO"
+    assert columns["created_at"] == "NO"
+    assert columns["detail"] == "YES"
+    assert columns["applied_at"] == "YES"
+
+    with migrated_engine.connect() as connection:
+        definition = connection.execute(
+            text("SELECT indexdef FROM pg_indexes WHERE indexname = 'ix_job_effects_pending'")
+        ).scalar_one_or_none()
+        key = connection.execute(
+            text(
+                "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+                "WHERE conname = 'job_effects_pkey'"
+            )
+        ).scalar_one_or_none()
+    assert definition is not None, "ix_job_effects_pending is missing"
+    assert "created_at" in definition
+    assert "INTENT" in definition, "the pending index must be partial on INTENT rows"
+    assert key is not None and "(job_id, effect_key)" in key, (
+        "the outbox key must be (job_id, effect_key)"
+    )

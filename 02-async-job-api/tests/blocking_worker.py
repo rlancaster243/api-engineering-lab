@@ -13,10 +13,11 @@ import time
 from pathlib import Path
 
 from app import handlers
+from app.handlers import HandlerContext
 from app.worker import main
 
 
-def _block(payload: dict) -> dict:
+def _block(payload: dict, _context: HandlerContext) -> dict:
     ready_file = payload["ready_file"]
     Path(ready_file).write_text("started", encoding="utf-8")
     while True:  # killed by the test; never returns

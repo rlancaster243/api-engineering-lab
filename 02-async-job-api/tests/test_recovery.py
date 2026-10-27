@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app import repository
 from app import worker as worker_module
 from app.config import retry_delay_seconds
+from app.handlers import HandlerContext
 from app.logging import configure_logging
 from app.worker import run_once
 from tests.db_helpers import (
@@ -183,7 +184,7 @@ def test_crashed_worker_job_is_reclaimed_by_another_worker(
     # same job type: the crash proved the lease is held by a dead process, and this
     # proves a healthy worker can take the job all the way to completion.
     monkeypatch.setitem(
-        worker_module.handlers.HANDLERS, "block", lambda payload: {"recovered": True}
+        worker_module.handlers.HANDLERS, "block", lambda payload, _context: {"recovered": True}
     )
 
     factory = new_session_factory(database_url)
@@ -443,7 +444,7 @@ def test_backoff_prevents_a_poison_job_from_starving_the_queue(
     poison = seed_job(migrated_engine, job_type="boom", max_attempts=3)
     healthy = seed_job(migrated_engine, job_type="echo", payload={"ok": True})
 
-    def _boom(payload: dict) -> dict:
+    def _boom(payload: dict, _context: HandlerContext) -> dict:
         raise RuntimeError("always fails")
 
     monkeypatch.setitem(worker_module.handlers.HANDLERS, "boom", _boom)
@@ -480,7 +481,7 @@ def test_failure_recording_survives_a_non_database_error(
     stream = io.StringIO()
     logger = configure_logging(stream)
 
-    def _boom(payload: dict) -> dict:
+    def _boom(payload: dict, _context: HandlerContext) -> dict:
         raise RuntimeError("handler exploded")
 
     def _broken_fail_attempt(*args: object, **kwargs: object) -> object:
@@ -522,7 +523,7 @@ def test_failure_recording_survives_a_non_database_error(
     recovered_stream = io.StringIO()
     recovered_logger = configure_logging(recovered_stream)
     monkeypatch.setitem(
-        worker_module.handlers.HANDLERS, "boom", lambda payload: {"recovered": True}
+        worker_module.handlers.HANDLERS, "boom", lambda payload, _context: {"recovered": True}
     )
 
     factory = new_session_factory(database_url)
@@ -562,7 +563,7 @@ def test_worker_logs_retrying_then_succeeded(
     logger = configure_logging(stream)
     calls = {"n": 0}
 
-    def _flaky(payload: dict) -> dict:
+    def _flaky(payload: dict, _context: HandlerContext) -> dict:
         calls["n"] += 1
         if calls["n"] == 1:
             raise RuntimeError("first attempt fails")
