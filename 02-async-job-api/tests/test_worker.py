@@ -270,6 +270,46 @@ def _count(engine: Engine, status: str) -> int:
         ).scalar_one()
 
 
+def test_stop_between_claim_and_handler_does_not_abandon_the_job(
+    session_factory: sessionmaker[Session],
+    migrated_engine: Engine,
+    log_stream: io.StringIO,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The riskiest window is between claiming and running: a stop landing there must
+    not abandon a claimed job.
+
+    Driven through ``run_forever`` because that is where the stop event is consulted.
+    The stop is requested from inside ``_claim`` — after the row is already
+    ``RUNNING`` and owned by this worker — so an implementation that checks the stop
+    flag before running the handler would leave the job stranded.
+    """
+    job_id = seed_job(migrated_engine, payload={"must": "complete"})
+    stop = threading.Event()
+    worker = Worker(session_factory, lease_seconds=60, poll_seconds=0.01, worker_id="worker-mid")
+
+    real_claim = worker._claim
+
+    def claim_then_request_stop() -> Any:
+        job = real_claim()
+        stop.set()
+        return job
+
+    monkeypatch.setattr(worker, "_claim", claim_then_request_stop)
+
+    thread = threading.Thread(target=worker.run_forever, args=(stop,), daemon=True)
+    thread.start()
+    thread.join(timeout=10)
+    assert not thread.is_alive()
+
+    row = read_job(migrated_engine, job_id)
+    assert row.status == "SUCCEEDED", (
+        "a job claimed before the stop request was abandoned instead of finished"
+    )
+    assert row.result == {"echoed": {"must": "complete"}}
+    assert row.lease_owner is None
+
+
 def test_stop_events_cover_sigterm_and_sigint() -> None:
     import signal
 

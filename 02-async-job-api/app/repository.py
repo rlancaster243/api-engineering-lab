@@ -73,12 +73,6 @@ def claim_next_job(session: Session, worker_id: str, lease_seconds: int) -> Job 
     return Job(**row._mapping)
 
 
-def claim_next_job_id(session: Session, worker_id: str, lease_seconds: int) -> uuid.UUID | None:
-    """Identifier-only variant of :func:`claim_next_job`, for callers that re-read the row."""
-    job = claim_next_job(session, worker_id, lease_seconds)
-    return None if job is None else job.id
-
-
 def complete_job(
     session: Session,
     *,
