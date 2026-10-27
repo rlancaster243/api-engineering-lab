@@ -4,9 +4,24 @@ Run as ``uv run python -m app.worker``. One job at a time; concurrency comes fro
 running several worker processes against the same ``DATABASE_URL``, which is what
 ``FOR UPDATE SKIP LOCKED`` is for (ADR 0010).
 
-Each cycle sweeps expired leases first, so a crashed worker's job is either
-reclaimed by a healthy worker or terminally failed once its attempts are gone.
-A crashed worker never leaves a job stranded in ``RUNNING``.
+Each cycle sweeps expired leases first, then claims reclaim-first: an expired
+``RUNNING`` job with attempts left is taken over before any ``PENDING`` work, so a
+crashed worker's job is never starved behind a busy queue and never left stranded
+in ``RUNNING``. A failed attempt with budget left is requeued with exponential
+backoff. Attempts are consumed at claim time (ADR 0010), so a crash is charged
+against the job's budget.
+
+A single cycle cannot take the process down: a sweep that raises, a claim that
+raises, a handler that raises or returns a non-object, and a result the database
+refuses are each logged and the loop polls again. ``BaseException`` is deliberately
+not caught, so SIGINT, SIGTERM and a stop propagated as ``SystemExit`` still end
+the process.
+
+No failure on this path logs a traceback or any handler-authored message. A
+formatted traceback repeats the exception message and source locals, and a claim
+failure can surface a row value (a decode error quoting a payload field). Every
+failure is logged as its class alone; the message itself is stored in
+``jobs.last_error`` and served from there.
 """
 
 import logging
@@ -37,7 +52,7 @@ STOP_EVENTS = (signal.SIGTERM, signal.SIGINT)
 TERMINAL_SUCCEEDED = "SUCCEEDED"
 TERMINAL_FAILED = "FAILED"
 
-#: Mirrors the SWEEP_SQL message so a logged event and the stored row agree.
+#: Mirrors the SWEEP_SQL message, so the logged length and the stored row agree.
 LEASE_EXHAUSTED_MESSAGE = "lease expired after {attempt} attempt(s); no attempts remaining"
 
 
@@ -66,33 +81,51 @@ class Worker:
         self.logger = logger or logging.getLogger("async_job_api")
 
     def run_once(self) -> bool:
-        """Sweep, then claim and process at most one job; ``True`` when one was handled."""
-        self._sweep()
+        """Sweep, claim reclaim-first, then process at most one job.
+
+        ``True`` means one job was handled — including a job that was requeued
+        rather than finished. Any exception from one cycle is logged as its class
+        alone and swallowed so the loop keeps polling.
+
+        The sweep sits inside the guard on purpose. ``_sweep`` already contains its
+        own ``SQLAlchemyError`` handling and continues to the claim, so the common
+        database failure costs nothing here; the outer catch is only the backstop
+        for an unexpected error, and an unguarded sweep would be the one remaining
+        way for a cycle to end ``run_forever``.
+        """
         try:
+            self._sweep()
             claim = self._claim()
-        except SQLAlchemyError:
-            self.logger.exception("claim failed; retrying on the next poll")
+            if claim is None:
+                return False
+            job, kind = claim
+            self._log_claimed(job, kind)
+            self._process(job)
+        except Exception as error:
+            log_event(
+                self.logger,
+                "worker.cycle_failed",
+                _level=logging.ERROR,
+                worker_id=self.worker_id,
+                error_class=type(error).__name__,
+            )
             return False
-        if claim is None:
-            return False
-        job, kind = claim
-        self._log_claimed(job, kind)
-        self._process(job)
         return True
 
     def _sweep(self) -> None:
         """Terminally fail expired jobs with no attempts left.
 
-        A sweep failure must not stop the worker: log it and claim anyway.
+        A sweep failure must not stop the worker: log the class and claim anyway.
         """
         try:
             with self._session_factory() as session:
                 swept = repository.sweep_expired(session)
                 session.commit()
-        except SQLAlchemyError:
-            self.logger.exception("recovery sweep failed; continuing to claim")
+        except SQLAlchemyError as error:
+            self._log_write_error("recovery sweep", None, error)
             return
         for job_id, attempt in swept:
+            last_error = LEASE_EXHAUSTED_MESSAGE.format(attempt=attempt)
             log_event(
                 self.logger,
                 "job.failed",
@@ -100,7 +133,8 @@ class Worker:
                 job_id=str(job_id),
                 attempt=attempt,
                 reason="lease_expired",
-                last_error=LEASE_EXHAUSTED_MESSAGE.format(attempt=attempt),
+                error_class="LeaseExpired",
+                last_error_chars=len(last_error),
             )
 
     def _claim(self) -> tuple[Job, repository.ClaimKind] | None:
@@ -130,24 +164,35 @@ class Worker:
     def _process(self, job: Job) -> None:
         handler = handlers.resolve(job.type)
         if handler is None:
-            self._fail(job, handlers.unknown_type_error(job.type))
+            self._fail(job, handlers.unknown_type_failure(job.type))
             return
         try:
             result = handler(job.payload)
         except Exception as error:  # a handler failure must not kill the loop
-            self.logger.exception("handler raised worker_id=%s job_id=%s", self.worker_id, job.id)
             self._fail(job, handlers.describe_failure(error))
+            return
+        if not isinstance(result, dict):
+            self._fail(job, handlers.invalid_result_failure(result))
             return
         self._finish(
             job,
             status=TERMINAL_SUCCEEDED,
             result=result,
-            last_error=None,
+            failure=None,
             event="job.succeeded",
         )
 
-    def _fail(self, job: Job, last_error: str) -> None:
-        """Record a failed attempt: requeue with backoff, or fail terminally."""
+    def _fail(self, job: Job, failure: handlers.FailureDetail) -> None:
+        """Record a failed attempt: requeue with backoff, or fail terminally.
+
+        ``failure.last_error`` is bound as a statement parameter and nothing else:
+        it is handler-authored text that may quote client data, so the events below
+        carry ``error_class`` and ``last_error_chars`` and never the message.
+
+        If the row cannot be written, the job stays ``RUNNING`` on an expired lease
+        — the same state a crashed worker leaves, which the next cycle's sweep
+        recovers. Retrying the write here would need the lease, which may be gone.
+        """
         backoff = retry_delay_seconds(
             job.attempt,
             base=self.retry_backoff_seconds,
@@ -159,14 +204,12 @@ class Worker:
                     session,
                     job_id=job.id,
                     worker_id=self.worker_id,
-                    last_error=last_error,
+                    last_error=failure.last_error,
                     backoff_seconds=backoff,
                 )
                 session.commit()
-        except SQLAlchemyError:
-            self.logger.exception(
-                "failure recording failed worker_id=%s job_id=%s", self.worker_id, job.id
-            )
+        except Exception as error:
+            self._log_write_error("failure recording", job, error)
             return
 
         if outcome is None:
@@ -174,29 +217,25 @@ class Worker:
             return
 
         status, attempt = outcome
+        fields: dict[str, object] = {
+            "worker_id": self.worker_id,
+            "job_id": str(job.id),
+            "job_type": job.type,
+            "attempt": attempt,
+            "error_class": failure.error_class,
+            "last_error_chars": len(failure.last_error),
+        }
         if status == "PENDING":
             log_event(
                 self.logger,
                 "job.retrying",
-                worker_id=self.worker_id,
-                job_id=str(job.id),
-                job_type=job.type,
-                attempt=attempt,
+                **fields,
                 max_attempts=job.max_attempts,
                 backoff_seconds=backoff,
-                last_error=last_error,
             )
             return
 
-        log_event(
-            self.logger,
-            "job.failed",
-            worker_id=self.worker_id,
-            job_id=str(job.id),
-            job_type=job.type,
-            attempt=attempt,
-            last_error=last_error,
-        )
+        log_event(self.logger, "job.failed", **fields)
 
     def _log_lease_lost(self, job: Job) -> None:
         log_event(
@@ -208,45 +247,88 @@ class Worker:
             attempt=job.attempt,
         )
 
-    def _finish(
+    def _complete(
         self,
         job: Job,
         *,
         status: str,
         result: dict | None,
         last_error: str | None,
+    ) -> int:
+        with self._session_factory() as session:
+            rowcount = repository.complete_job(
+                session,
+                job_id=job.id,
+                worker_id=self.worker_id,
+                status=status,
+                result=result,
+                last_error=last_error,
+            )
+            session.commit()
+        return rowcount
+
+    def _finish(
+        self,
+        job: Job,
+        *,
+        status: str,
+        result: dict | None,
+        failure: handlers.FailureDetail | None,
         event: str,
     ) -> None:
         try:
-            with self._session_factory() as session:
-                rowcount = repository.complete_job(
-                    session,
-                    job_id=job.id,
-                    worker_id=self.worker_id,
-                    status=status,
-                    result=result,
-                    last_error=last_error,
-                )
-                session.commit()
-        except SQLAlchemyError:
-            self.logger.exception(
-                "completion failed worker_id=%s job_id=%s", self.worker_id, job.id
+            rowcount = self._complete(
+                job,
+                status=status,
+                result=result,
+                last_error=None if failure is None else failure.last_error,
             )
+        except Exception as error:
+            self._log_completion_error(job, error)
+            if status == TERMINAL_SUCCEEDED:
+                self._finish(
+                    job,
+                    status=TERMINAL_FAILED,
+                    result=None,
+                    failure=handlers.completion_failure(error),
+                    event="job.failed",
+                )
             return
 
         if rowcount == 0:
             self._log_lease_lost(job)
             return
 
-        log_event(
-            self.logger,
-            event,
-            worker_id=self.worker_id,
-            job_id=str(job.id),
-            job_type=job.type,
-            attempt=job.attempt,
-            last_error=last_error,
+        fields: dict[str, object] = {
+            "worker_id": self.worker_id,
+            "job_id": str(job.id),
+            "job_type": job.type,
+            "attempt": job.attempt,
+        }
+        if failure is not None:
+            fields["error_class"] = failure.error_class
+            fields["last_error_chars"] = len(failure.last_error)
+        log_event(self.logger, event, **fields)
+
+    def _log_write_error(self, action: str, job: Job | None, error: Exception) -> None:
+        """Log the class only, naming which write failed.
+
+        A formatted traceback is unsafe on every one of these paths: SQLAlchemy
+        repeats the statement and its bound parameters, which hold the handler's
+        result and the ``last_error`` message on a completion or failure, and can
+        hold a row value on a sweep.
+        """
+        self.logger.error(
+            "%s failed worker_id=%s job_id=%s error_class=%s",
+            action,
+            self.worker_id,
+            None if job is None else job.id,
+            type(error).__name__,
         )
+
+    def _log_completion_error(self, job: Job, error: Exception) -> None:
+        """Log a completion failure's class only — see ``_log_write_error``."""
+        self._log_write_error("completion", job, error)
 
     def run_forever(self, stop: threading.Event) -> None:
         log_event(

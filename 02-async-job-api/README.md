@@ -33,7 +33,8 @@ Postgres is published on host port **5433** to avoid clashing with Project 1 on 
 ## Run the worker
 
 The worker is a **separate process** from the API (ADR 0010). It shares
-`DATABASE_URL` and claims `PENDING` jobs one at a time:
+`DATABASE_URL` and claims jobs one at a time, reclaiming an expired `RUNNING` job
+before it takes fresh `PENDING` work:
 
 ```bash
 # Same environment as the API, then:
@@ -54,9 +55,17 @@ Each event is one JSON object on stdout:
 ```
 
 Events: `worker.started`, `worker.stopped`, `job.claimed`, `job.recovered`,
-`job.succeeded`, `job.failed`, `job.retrying`, `job.lease_lost`. Payloads and results
-are never logged. `job.recovered` marks a job taken over from a worker whose lease
-expired; the accompanying `job.claimed` for the same row follows it.
+`job.succeeded`, `job.failed`, `job.retrying`, `job.lease_lost`,
+`worker.cycle_failed`. `job.recovered` marks a job taken over from a worker whose
+lease expired; the accompanying `job.claimed` for the same row follows it.
+`worker.cycle_failed` is the containment event for a cycle that raised anywhere —
+the worker logs it and polls again instead of exiting.
+
+No payload, no result and no handler message is logged. A failure event carries
+`error_class` and `last_error_chars`; the message itself lives on the job row and is
+served by `GET /v1/jobs/{id}`. No traceback is logged either: a formatted traceback
+repeats the exception message and source locals, and a claim failure can surface a
+row value out of the driver.
 
 ## Retries and crash recovery
 
@@ -115,13 +124,40 @@ Without `TEST_DATABASE_URL`, migration integration tests skip (CI postgres job s
 | `TEST_DATABASE_URL` | Disposable DB for integration tests |
 | `REQUIRE_DATABASE` | `1` fails CI if database tests are skipped |
 | `APP_ENV` | Reserved for later worker/API modes |
-| `WORKER_POLL_SECONDS` | Optional, default `1.0`. Worker sleep between empty polls; must be `> 0` |
+| `WORKER_POLL_SECONDS` | Optional, default `1.0`. Worker sleep between empty polls; must be finite, `> 0` and `<= 3600` |
 | `LEASE_SECONDS` | Optional, default `60`. Claim lease length; must be `> 0` and `< 3600` |
 | `RETRY_BACKOFF_SECONDS` | Optional, default `5`. Base retry delay; must be `> 0` and `<= 3600` |
 | `MAX_RETRY_BACKOFF_SECONDS` | Optional, default `300`. Backoff ceiling; `> 0`, `<= 3600`, and `>= RETRY_BACKOFF_SECONDS` |
 
 These four are read by the worker only. Invalid values raise `ConfigError` and the
 worker exits non-zero rather than starting with a nonsensical lease or backoff.
+
+The worker survives a bad cycle rather than exiting: a sweep that raises, a claim
+that raises, a handler that raises or returns a non-object, and a result the
+database refuses to store are each logged as `error_class` under
+`worker.cycle_failed` or the relevant job event, and the loop polls again.
+
+Surviving is not the same as recovering, but recovery now covers the gap: if the
+worker cannot even write the failure (the requeue itself errors), the row is left
+`RUNNING` on a live-or-expiring lease, and the next cycle either reclaims it —
+attempts remain — or sweeps it to `FAILED` when they do not. That is deliberately
+not retried in place: the write may have failed because the lease is already gone,
+and re-writing under a lost lease would overwrite the new owner's row.
+
+`jobs.result` has no `jsonb_typeof(result) = 'object'` constraint: the worker
+refuses to store a non-object result, and `GET /v1/jobs/{id}` serves a non-object
+result as `null`, but a database-level guarantee needs a migration that this branch
+(already at `0004_job_retry`) does not carry.
+
+## Known limitation (logging)
+
+The worker logs no payload, no result, no handler error message and no traceback;
+failures are recorded as `error_class` plus `last_error_chars` (the length of the
+message that was stored on the row). The HTTP error handlers in
+`app/errors.py` log an exception's stack frames and SQLSTATE but never its message,
+because psycopg's `DETAIL: Failing row contains (...)` quotes the submitted row.
+Frames name call sites, not values, so a database failure is diagnosable without
+echoing the request body.
 
 ## ADRs
 
