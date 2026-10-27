@@ -3,6 +3,7 @@ import uuid
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import IntegrityError, ProgrammingError
 
 from app.errors import ERROR_SPECS, ErrorCode
 from app.main import app as real_app
@@ -149,3 +150,38 @@ def test_unmapped_http_exception_never_leaks_its_detail(client: TestClient) -> N
     response = client.get("/_http/418")
     _assert_envelope(response, ErrorCode.INTERNAL_ERROR)
     assert "secret internal detail" not in response.text
+
+
+# --- database failures over HTTP (real app) ---------------------------------------------
+
+
+def _patch_create_to_raise(monkeypatch: pytest.MonkeyPatch, exc: Exception) -> None:
+    def raise_it(self, body):  # noqa: ANN001, ANN202
+        raise exc
+
+    monkeypatch.setattr("app.service.ItemService.create", raise_it)
+
+
+def test_non_duplicate_integrity_error_is_a_sanitized_500_not_503(
+    api: TestClient, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    _patch_create_to_raise(monkeypatch, IntegrityError("INSERT", {}, Exception("fk_violation")))
+    with caplog.at_level(logging.ERROR, logger="app.errors"):
+        response = api.post("/v1/items", json={"content_id": "x"})
+    error = _assert_envelope(response, ErrorCode.INTERNAL_ERROR)
+    assert response.status_code == 500
+    assert "fk_violation" not in response.text
+    assert "INSERT" not in response.text
+    assert any(error["request_id"] in record.getMessage() for record in caplog.records)
+
+
+def test_generic_non_unavailable_dbapi_error_is_a_sanitized_500(
+    api: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_create_to_raise(
+        monkeypatch, ProgrammingError("SELECT bad", {}, Exception("undefined_table"))
+    )
+    response = api.post("/v1/items", json={"content_id": "x"})
+    _assert_envelope(response, ErrorCode.INTERNAL_ERROR)
+    assert "undefined_table" not in response.text
+    assert "SELECT bad" not in response.text

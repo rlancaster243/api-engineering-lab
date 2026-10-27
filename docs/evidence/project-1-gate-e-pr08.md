@@ -37,3 +37,15 @@ uv run ruff check . && uv run ruff format --check .
 TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/rest_api_lab_test \
   REQUIRE_DATABASE=1 uv run pytest -q tests/test_ready.py
 ```
+
+## Audit follow-up (2026-10-26)
+
+- The repository owner keeps Gate E ticked (decision 2026-10-26).
+- PR-08 was implemented with AI assistance (see Assistance attribution above). Gate E therefore records reviewed delivery and defense of the design, not unaided implementation.
+- The Project 1 audit found the original regression test, `test_ready_performs_a_query_not_a_pool_heuristic`, tautological: it wrapped the real `database_is_ready` and only counted calls, so replacing the probe body with `pass` left the suite green.
+- Replacement tests in `tests/test_ready.py`:
+  - `test_ready_returns_503_against_a_real_unreachable_database` points the app at an unreachable address with no patching of the probe and expects a sanitized 503.
+  - `test_ready_executes_select_1_on_the_apps_engine` captures executed SQL on the app's engine and expects `SELECT 1`.
+- Both fail when the probe body is replaced with `pass`.
+- Related gaps closed in the same change: `test_concurrent_resolve_creates_one_user_row` now forces the F-027 race with a barrier, and `tests/test_errors.py` pins non-duplicate integrity errors and generic database errors to a sanitized 500.
+- An unaided repeat remains the stronger qualification and is not claimed.
