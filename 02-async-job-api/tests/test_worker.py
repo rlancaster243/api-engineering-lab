@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app import worker as worker_module
 from app.db import create_session_factory
+from app.handlers import HandlerContext
 from app.logging import configure_logging
 from app.worker import STOP_EVENTS, Worker, make_worker_id, run_once
 from tests.db_helpers import clear_jobs, dispose, new_session_factory, read_job, seed_job
@@ -96,7 +97,7 @@ def test_handler_failure_retries_then_terminal_fails(
     failing_id = seed_job(migrated_engine, job_type="boom", payload={}, max_attempts=1)
     following_id = seed_job(migrated_engine, job_type="echo", payload={"ok": True})
 
-    def _boom(payload: dict) -> dict:
+    def _boom(payload: dict, _context: HandlerContext) -> dict:
         raise RuntimeError("handler exploded")
 
     monkeypatch.setitem(worker_module.handlers.HANDLERS, "boom", _boom)
@@ -137,7 +138,7 @@ def test_long_error_message_is_truncated_to_2000_chars(
 ) -> None:
     job_id = seed_job(migrated_engine, job_type="chatty", payload={}, max_attempts=1)
 
-    def _chatty(payload: dict) -> dict:
+    def _chatty(payload: dict, _context: HandlerContext) -> dict:
         raise ValueError("x" * 5000)
 
     monkeypatch.setitem(worker_module.handlers.HANDLERS, "chatty", _chatty)
@@ -159,7 +160,7 @@ def test_lease_lost_on_completion_is_logged_not_retried(
     """If the lease is taken over mid-handler, completion logs job.lease_lost and stops."""
     job_id = seed_job(migrated_engine, job_type="steal", payload={})
 
-    def _steal(payload: dict) -> dict:
+    def _steal(payload: dict, _context: HandlerContext) -> dict:
         with migrated_engine.connect() as conn:
             conn.execute(
                 text("UPDATE jobs SET lease_owner = 'worker-thief' WHERE id = :id"),
@@ -314,7 +315,7 @@ def test_non_dict_handler_result_fails_job_and_worker_survives(
     bad_id = seed_job(migrated_engine, job_type="returns.list", payload={})
     following_id = seed_job(migrated_engine, payload={"ok": True})
 
-    def _returns_list(payload: dict) -> Any:
+    def _returns_list(payload: dict, _context: HandlerContext) -> Any:
         return [1, 2, 3]
 
     monkeypatch.setitem(worker_module.handlers.HANDLERS, "returns.list", _returns_list)
@@ -356,7 +357,7 @@ def test_non_serialisable_result_fails_job_instead_of_stranding_it(
     """A dict holding a set cannot reach jsonb; the job must land FAILED, not RUNNING."""
     job_id = seed_job(migrated_engine, job_type="returns.set", payload={})
 
-    def _returns_set(payload: dict) -> dict:
+    def _returns_set(payload: dict, _context: HandlerContext) -> dict:
         return {"values": {1, 2, 3}}
 
     monkeypatch.setitem(worker_module.handlers.HANDLERS, "returns.set", _returns_set)
@@ -428,7 +429,7 @@ def test_stop_signal_finishes_the_job_in_hand(
     stop = threading.Event()
     handler_entered = threading.Event()
 
-    def _slow(payload: dict) -> dict:
+    def _slow(payload: dict, _context: HandlerContext) -> dict:
         handler_entered.set()
         # Give the loop a chance to observe the stop while we are mid-job.
         time.sleep(0.05)
@@ -569,7 +570,7 @@ def test_handler_failure_message_never_reaches_the_logs(
         migrated_engine, job_type="leaky", payload={"api_key": secret}, max_attempts=1
     )
 
-    def _leaky(payload: dict) -> dict:
+    def _leaky(payload: dict, _context: HandlerContext) -> dict:
         raise RuntimeError(f"rejected key {payload['api_key']}")
 
     monkeypatch.setitem(worker_module.handlers.HANDLERS, "leaky", _leaky)
@@ -609,7 +610,7 @@ def test_handler_failure_retry_event_carries_class_and_length_only(
     secret = "sk-live-retry-77c2"
     job_id = seed_job(migrated_engine, job_type="leaky-retry", payload={"api_key": secret})
 
-    def _leaky(payload: dict) -> dict:
+    def _leaky(payload: dict, _context: HandlerContext) -> dict:
         raise RuntimeError(f"rejected key {payload['api_key']}")
 
     monkeypatch.setitem(worker_module.handlers.HANDLERS, "leaky-retry", _leaky)
@@ -644,7 +645,7 @@ def test_non_serialisable_result_does_not_leak_payload_or_result_to_logs(
     secret = "result-secret-4411"
     seed_job(migrated_engine, job_type="returns.opaque", payload={"k": secret})
 
-    def _returns_opaque(payload: dict) -> dict:
+    def _returns_opaque(payload: dict, _context: HandlerContext) -> dict:
         return {"secret": secret, "values": {1, 2}}
 
     monkeypatch.setitem(worker_module.handlers.HANDLERS, "returns.opaque", _returns_opaque)

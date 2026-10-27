@@ -5,8 +5,9 @@
 1. **PR-2-00 (Foundation):** Done ([#11](https://github.com/rlancaster243/api-engineering-lab/pull/11)) — install, `DATABASE_URL`, Alembic, `GET /health`, CI postgres job.
 2. **PR-2-01 (Schema + submit):** Done (`dd365f2`) — `jobs` table (ADR 0010), `POST /v1/jobs` → 202 after commit, `GET /v1/jobs/{id}`.
 3. **PR-2-02 (Worker):** Done ([#16](https://github.com/rlancaster243/api-engineering-lab/pull/16)) — claim/lease protocol, handler registry, separate worker process.
-4. **PR-2-03 (Recovery):** In review — retries with backoff, lease-expiry recovery, crash falsification tests.
-5. **PR-2-04:** Idempotency — `Idempotency-Key` per ADR 0011.
+4. **PR-2-03 (Recovery):** Done ([#17](https://github.com/rlancaster243/api-engineering-lab/pull/17)) — retries with backoff, lease-expiry recovery, crash falsification tests.
+5. **PR-2-04a (Effects):** This branch — transactional outbox plus reconciler, so a reclaimed job does not repeat an external side effect (falsification case 4).
+6. **PR-2-04b (Idempotency):** `Idempotency-Key` per ADR 0011.
 
 ## Run locally
 
@@ -56,10 +57,11 @@ Each event is one JSON object on stdout:
 
 Events: `worker.started`, `worker.stopped`, `job.claimed`, `job.recovered`,
 `job.succeeded`, `job.failed`, `job.retrying`, `job.lease_lost`,
-`worker.cycle_failed`. `job.recovered` marks a job taken over from a worker whose
-lease expired; the accompanying `job.claimed` for the same row follows it.
-`worker.cycle_failed` is the containment event for a cycle that raised anywhere —
-the worker logs it and polls again instead of exiting.
+`effect.reconciled`, `worker.cycle_failed`. `job.recovered` marks a job taken over
+from a worker whose lease expired; the accompanying `job.claimed` for the same row
+follows it. `effect.reconciled` marks a stranded outbox effect the reconciler
+applied. `worker.cycle_failed` is the containment event for a cycle that raised
+anywhere — the worker logs it and polls again instead of exiting.
 
 No payload, no result and no handler message is logged. A failure event carries
 `error_class` and `last_error_chars`; the message itself lives on the job row and is
@@ -67,17 +69,70 @@ served by `GET /v1/jobs/{id}`. No traceback is logged either: a formatted traceb
 repeats the exception message and source locals, and a claim failure can surface a
 row value out of the driver.
 
+## Side effects and the outbox
+
+A handler that calls the outside world — charges a card, sends mail — must assume
+it can be run more than once: a reclaimed job re-runs it (see above). The outbox is
+how a handler makes that safe.
+
+**The contract.** A handler receives `(payload, context)`, where `context` carries
+the session factory and the job id. Before performing the effect it calls
+`repository.claim_effect(session, job_id=..., effect_key=..., detail=...)` and
+commits; only if that returns `True` may it apply the effect. `effect_key` **must be
+stable and derived from the job** — an order id, a template name, a fixed string
+like `notify`. A key derived from the current time or a random value makes every
+attempt a brand-new effect, which is exactly the duplicate the outbox exists to
+prevent. `notify` in `app/handlers.py` is the worked example.
+
+**What the outbox guarantees.** `(job_id, effect_key)` is the primary key of
+`job_effects`, and the claim is `INSERT ... ON CONFLICT DO NOTHING RETURNING`. The
+first attempt inserts a row and owns the effect; every later attempt for the same
+job and key inserts nothing, so it is told to skip. A job that crashes after the
+external call but before its success is stored therefore does **not** call out
+again when it is reclaimed.
+
+**What it does not guarantee.** This is **at-least-once**, and the outbox cannot
+turn that into exactly-once. It makes duplicates *detectable and skippable* inside
+this service, and it gives you reconciliation for the crash window, but a
+third-party call that succeeds and then loses its response — or a vendor that
+retries on its own — is still outside the database's knowledge. Make the vendor
+call idempotent too, normally by passing `effect_key` as the vendor's idempotency
+key, and make the external operation safe to repeat.
+
+**The reconciler.** A crash between the claim and the confirmation leaves the row
+`INTENT`. Each worker cycle runs `_reconcile_effects()` after the sweep and before
+the claim: it reads `INTENT` rows older than `EFFECT_RECONCILE_GRACE_SECONDS`,
+applies each through the handler's applier, marks it `APPLIED`, and logs
+`effect.reconciled` with `job_id`, `effect_key` and `age_seconds`. The grace period
+is why a live handler is not robbed mid-run: a young `INTENT` may still be applied
+by the worker that holds it, so the reconciler only takes rows that could not
+plausibly still be in flight.
+
+Every worker reconciles on every cycle, so two of them will race for the same
+stranded row. The reconciler takes a `FOR UPDATE` row lock and holds it across the
+apply and the confirmation, so the loser blocks and then finds the row already
+`APPLIED` — the effect is applied once. A reconcile failure rolls the row back to
+`INTENT`, is logged by class, and the cycle carries on to the claim; it never stops
+the worker.
+
+Effect claims are committed in their **own transaction**, never in the same one as
+job completion. The point of the outbox is that the claim outlives the failure of
+whatever comes after it.
+
 ## Retries and crash recovery
 
-Every worker cycle runs a **sweep** before claiming:
+Every worker cycle runs a **sweep**, then **reconciles stranded effects**, then
+claims:
 
 1. Expired `RUNNING` jobs with no attempts left are marked `FAILED` with a readable
    `last_error` and `finished_at`. This is what stops a crashed job on its last
    attempt from sitting in `RUNNING` forever.
-2. Then the claim runs, **reclaim first**: an expired `RUNNING` job with attempts
+2. `INTENT` effects older than `EFFECT_RECONCILE_GRACE_SECONDS` are applied and
+   confirmed (see "Side effects and the outbox").
+3. Then the claim runs, **reclaim first**: an expired `RUNNING` job with attempts
    remaining is taken over before any `PENDING` work, so recovery cannot be starved
    by a busy queue.
-3. Then due `PENDING` jobs, oldest first.
+4. Then due `PENDING` jobs, oldest first.
 
 A handler failure is recorded in **one** statement that returns either `PENDING`
 (requeue, attempts remain) or `FAILED` (attempts exhausted). Requeued jobs get
@@ -94,17 +149,26 @@ attempts remain.
 Handlers must finish inside `LEASE_SECONDS`. There is no heartbeat yet, so a handler
 that outlives its lease can be reclaimed and run twice.
 
-## Known limitations (PR-2-03)
+## Known limitations (PR-2-04a)
 
-- **Recovery is worker-driven.** The sweep runs inside each worker. If no worker is
-  running, nothing is reclaimed or terminated.
-- **At-least-once, not exactly-once.** A reclaimed job runs its handler again. If the
-  handler had already produced an external side effect, that effect can happen twice.
-  Making side effects safe needs an outbox and reconciliation — PR-2-04 / ADR 0011.
+- **Recovery is worker-driven.** The sweep and the reconcile both run inside each
+  worker. If no worker is running, nothing is reclaimed, terminated or reconciled.
+- **At-least-once, not exactly-once.** A reclaimed job runs its handler again. The
+  outbox makes a duplicate side effect detectable and skippable, and the reconciler
+  covers a crash before confirmation, but a third-party call is still not exactly
+  once — see "Side effects and the outbox".
+- **The reconciler can still duplicate an in-flight effect.** If a handler stalls
+  past `EFFECT_RECONCILE_GRACE_SECONDS` and then applies its effect, both it and the
+  reconciler apply. Choose the grace period to exceed the handler's worst case, and
+  keep the vendor call idempotent.
+- **One effect per `(job_id, effect_key)`.** A genuinely repeatable effect — a
+  per-attempt notification — needs an `effect_key` that includes the attempt, which
+  this slice does not model.
 - **No heartbeat.** A handler that outlives `LEASE_SECONDS` can be reclaimed mid-run
   and executed twice.
-- **No `Idempotency-Key`.** PR-2-04.
-- **No list endpoint, no auth, one `echo` handler.** Out of scope for this slice.
+- **No `Idempotency-Key`.** PR-2-04b.
+- **No list endpoint, no auth, and only `echo` and `notify`.** Out of scope for this
+  slice.
 
 ## Lint and test
 
@@ -128,9 +192,11 @@ Without `TEST_DATABASE_URL`, migration integration tests skip (CI postgres job s
 | `LEASE_SECONDS` | Optional, default `60`. Claim lease length; must be `> 0` and `< 3600` |
 | `RETRY_BACKOFF_SECONDS` | Optional, default `5`. Base retry delay; must be `> 0` and `<= 3600` |
 | `MAX_RETRY_BACKOFF_SECONDS` | Optional, default `300`. Backoff ceiling; `> 0`, `<= 3600`, and `>= RETRY_BACKOFF_SECONDS` |
+| `EFFECT_RECONCILE_GRACE_SECONDS` | Optional, default `30`. How old a stranded `INTENT` effect must be before the reconciler applies it; must be `> 0` and `<= 3600` |
 
-These four are read by the worker only. Invalid values raise `ConfigError` and the
-worker exits non-zero rather than starting with a nonsensical lease or backoff.
+These five are read by the worker only. Invalid values raise `ConfigError` and the
+worker exits non-zero rather than starting with a nonsensical lease, backoff or
+reconcile grace.
 
 The worker survives a bad cycle rather than exiting: a sweep that raises, a claim
 that raises, a handler that raises or returns a non-object, and a result the
@@ -147,7 +213,7 @@ and re-writing under a lost lease would overwrite the new owner's row.
 `jobs.result` has no `jsonb_typeof(result) = 'object'` constraint: the worker
 refuses to store a non-object result, and `GET /v1/jobs/{id}` serves a non-object
 result as `null`, but a database-level guarantee needs a migration that this branch
-(already at `0004_job_retry`) does not carry.
+(already at `0005_job_effects`) does not carry.
 
 ## Known limitation (logging)
 

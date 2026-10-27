@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, Index, Integer, String, Text, func
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -65,5 +65,37 @@ class Job(Base):
             "ix_jobs_lease_expiry",
             "lease_expires_at",
             postgresql_where="status = 'RUNNING'",
+        ),
+    )
+
+
+class JobEffect(Base):
+    """One claimed external side effect per ``(job_id, effect_key)``.
+
+    The composite primary key is the idempotency: a second claim for the same pair
+    inserts nothing, so a reclaimed job cannot apply the same effect twice.
+    ``status`` is ``INTENT`` from the claim until the effect is confirmed, and a row
+    stuck in ``INTENT`` past the reconciler's grace period is the crash signal.
+    """
+
+    __tablename__ = "job_effects"
+
+    job_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("jobs.id", ondelete="CASCADE"), primary_key=True
+    )
+    effect_key: Mapped[str] = mapped_column(Text, primary_key=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="INTENT")
+    detail: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint("status IN ('INTENT','APPLIED')", name="ck_effect_status"),
+        Index(
+            "ix_job_effects_pending",
+            "created_at",
+            postgresql_where="status = 'INTENT'",
         ),
     )

@@ -122,3 +122,39 @@ def test_backoff_equal_to_ceiling_is_allowed() -> None:
     )
     assert settings.retry_backoff_seconds == 30
     assert settings.max_retry_backoff_seconds == 30
+
+
+# ---------------------------------------------------------------------------
+# Effect reconcile grace (PR-2-04)
+# ---------------------------------------------------------------------------
+
+
+def test_effect_reconcile_grace_defaults_to_30_seconds() -> None:
+    assert load_settings(BASE_ENVIRON).effect_reconcile_grace_seconds == 30
+
+
+def test_effect_reconcile_grace_accepts_an_override() -> None:
+    settings = load_settings({**BASE_ENVIRON, "EFFECT_RECONCILE_GRACE_SECONDS": "120"})
+    assert settings.effect_reconcile_grace_seconds == 120
+
+
+def test_effect_reconcile_grace_accepts_the_upper_bound() -> None:
+    settings = load_settings({**BASE_ENVIRON, "EFFECT_RECONCILE_GRACE_SECONDS": "3600"})
+    assert settings.effect_reconcile_grace_seconds == 3600
+
+
+def test_effect_reconcile_grace_accepts_the_lower_bound() -> None:
+    settings = load_settings({**BASE_ENVIRON, "EFFECT_RECONCILE_GRACE_SECONDS": "1"})
+    assert settings.effect_reconcile_grace_seconds == 1
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "-30", "3601", "100000", "abc", "1.5", "30s"])
+def test_invalid_effect_reconcile_grace_raises_config_error(value: str) -> None:
+    """A zero grace would let the reconciler steal a live handler's claim."""
+    with pytest.raises(ConfigError, match="EFFECT_RECONCILE_GRACE_SECONDS"):
+        load_settings({**BASE_ENVIRON, "EFFECT_RECONCILE_GRACE_SECONDS": value})
+
+
+def test_empty_effect_reconcile_grace_falls_back_to_default() -> None:
+    settings = load_settings({**BASE_ENVIRON, "EFFECT_RECONCILE_GRACE_SECONDS": ""})
+    assert settings.effect_reconcile_grace_seconds == 30
