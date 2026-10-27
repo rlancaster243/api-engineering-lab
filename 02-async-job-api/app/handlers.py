@@ -10,6 +10,7 @@ from collections.abc import Callable
 Handler = Callable[[dict], dict]
 
 MAX_ERROR_CHARS = 2000
+UNKNOWN_TYPE_MESSAGE = "no handler registered for type '{job_type}'"
 
 
 def _echo(payload: dict) -> dict:
@@ -33,4 +34,5 @@ def describe_failure(error: BaseException) -> str:
 
 
 def unknown_type_error(job_type: str) -> str:
-    return f"no handler registered for type '{job_type}'"[:MAX_ERROR_CHARS]
+    """The ``last_error`` for a job whose type has no registered handler."""
+    return UNKNOWN_TYPE_MESSAGE.format(job_type=job_type)[:MAX_ERROR_CHARS]

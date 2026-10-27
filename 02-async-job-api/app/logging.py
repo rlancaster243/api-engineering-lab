@@ -12,8 +12,9 @@ from typing import Any
 
 LOGGER_NAME = "async_job_api"
 
-#: Keys whose values must never reach a log line.
-REDACTED_KEYS = frozenset({"payload", "result", "traceback"})
+#: Keys whose values must never reach a log line, as a backstop if a caller ever
+#: passes a whole job dict. Callers should not pass these at all.
+REDACTED_KEYS = frozenset({"payload", "result"})
 
 
 class JsonLinesFormatter(logging.Formatter):
