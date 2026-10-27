@@ -17,6 +17,8 @@ DEFAULT_RETRY_BACKOFF_SECONDS = 5
 DEFAULT_MAX_RETRY_BACKOFF_SECONDS = 300
 _MAX_BACKOFF_SECONDS = 3600
 _MAX_WORKER_POLL_SECONDS = 3600.0
+DEFAULT_EFFECT_RECONCILE_GRACE_SECONDS = 30
+_MAX_EFFECT_RECONCILE_GRACE_SECONDS = 3600
 
 
 @dataclass(frozen=True)
@@ -27,6 +29,7 @@ class Settings:
     lease_seconds: int = DEFAULT_LEASE_SECONDS
     retry_backoff_seconds: int = DEFAULT_RETRY_BACKOFF_SECONDS
     max_retry_backoff_seconds: int = DEFAULT_MAX_RETRY_BACKOFF_SECONDS
+    effect_reconcile_grace_seconds: int = DEFAULT_EFFECT_RECONCILE_GRACE_SECONDS
 
 
 def sqlalchemy_url(url: str) -> str:
@@ -105,6 +108,22 @@ def _retry_backoff(environ: Mapping[str, str]) -> tuple[int, int]:
     return backoff, ceiling
 
 
+def _effect_reconcile_grace_seconds(environ: Mapping[str, str]) -> int:
+    """Grace before a stranded effect is reconciled — inclusive upper bound.
+
+    Must be strictly positive: a zero grace would let a reconciler steal an
+    ``INTENT`` row from a handler that has committed the claim and is about to
+    apply, which is the duplicate this outbox exists to prevent.
+    """
+    return _bounded_int(
+        environ,
+        "EFFECT_RECONCILE_GRACE_SECONDS",
+        DEFAULT_EFFECT_RECONCILE_GRACE_SECONDS,
+        maximum=_MAX_EFFECT_RECONCILE_GRACE_SECONDS,
+        inclusive=True,
+    )
+
+
 def load_settings(environ: Mapping[str, str] = os.environ) -> Settings:
     database_url = environ.get("DATABASE_URL", "").strip()
     if not database_url:
@@ -122,6 +141,7 @@ def load_settings(environ: Mapping[str, str] = os.environ) -> Settings:
         lease_seconds=_lease_seconds(environ),
         retry_backoff_seconds=retry_backoff,
         max_retry_backoff_seconds=max_retry_backoff,
+        effect_reconcile_grace_seconds=_effect_reconcile_grace_seconds(environ),
     )
 
 
