@@ -51,7 +51,7 @@ def test_migration_round_trip(migrated_database_url: str) -> None:
 
         with engine.connect() as conn:
             version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-            assert version == "0003_job_leases"
+            assert version == "0004_job_retry"
             result = conn.execute(
                 text(
                     "SELECT table_name FROM information_schema.tables "
@@ -71,7 +71,7 @@ def test_migration_round_trip(migrated_database_url: str) -> None:
 def test_migration_upgrade_from_clean_database(migrated_engine: Engine) -> None:
     with migrated_engine.connect() as connection:
         version = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-    assert version == "0003_job_leases"
+    assert version == "0004_job_retry"
 
 
 def test_jobs_table_exists(migrated_engine: Engine) -> None:
@@ -210,4 +210,76 @@ def test_lease_columns_downgrade_cleanly(migrated_database_url: str) -> None:
 
     with create_engine(sqlalchemy_url(migrated_database_url)).connect() as conn:
         version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-    assert version == "0003_job_leases"
+    assert version == "0004_job_retry"
+
+
+def test_0004_adds_next_attempt_at(migrated_engine: Engine) -> None:
+    """next_attempt_at must exist, be NOT NULL, and default to now()."""
+    with migrated_engine.connect() as connection:
+        column = connection.execute(
+            text(
+                "SELECT is_nullable, column_default FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = 'jobs' "
+                "AND column_name = 'next_attempt_at'"
+            )
+        ).one_or_none()
+    assert column is not None, "0004_job_retry did not add next_attempt_at"
+    assert column.is_nullable == "NO"
+    assert column.column_default is not None and "now()" in column.column_default
+
+
+def test_0004_backfill_matches_created_at(migrated_database_url: str) -> None:
+    """Rows present before the migration must be backfilled to their created_at.
+
+    Exercises the real upgrade path on a scratch database: downgrade to 0003,
+    insert a row, then upgrade so the UPDATE ... SET next_attempt_at = created_at
+    actually runs against existing data.
+    """
+    parsed = urlparse(migrated_database_url)
+    base_name = parsed.path.lstrip("/")
+    suffix = "_backfill"
+    scratch_name = base_name[: 63 - len(suffix)] + suffix
+    maintenance_url = urlunparse(parsed._replace(path="/postgres"))
+    scratch_url = urlunparse(parsed._replace(path=f"/{scratch_name}"))
+
+    maint = psycopg.connect(maintenance_url, autocommit=True)
+    try:
+        maint.execute(f'CREATE DATABASE "{scratch_name}"')
+    finally:
+        maint.close()
+
+    config = Config(str(_PROJECT_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(_PROJECT_ROOT / "alembic"))
+    config.set_main_option("sqlalchemy.url", sqlalchemy_url(scratch_url))
+
+    engine = create_engine(sqlalchemy_url(scratch_url))
+    try:
+        command.upgrade(config, "0003_job_leases")
+        with engine.connect() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO jobs (id, type, payload, created_at, updated_at) "
+                    "VALUES (:id, 'echo', '{}'::jsonb, now() - interval '1 hour', now())"
+                ),
+                {"id": str(uuid.uuid4())},
+            )
+            conn.commit()
+
+        command.upgrade(config, "head")
+
+        with engine.connect() as conn:
+            backfilled = conn.execute(
+                text(
+                    "SELECT next_attempt_at = created_at AS matches, "
+                    "next_attempt_at IS NOT NULL AS present FROM jobs"
+                )
+            ).one()
+        assert backfilled.present, "existing row was not backfilled"
+        assert backfilled.matches, "backfill must equal created_at for existing rows"
+    finally:
+        engine.dispose()
+        drop = psycopg.connect(maintenance_url, autocommit=True)
+        try:
+            drop.execute(f'DROP DATABASE "{scratch_name}" WITH (FORCE)')
+        finally:
+            drop.close()

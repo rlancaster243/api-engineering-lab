@@ -51,6 +51,7 @@ def seed_job(
     created_at: datetime | None = None,
     lease_owner: str | None = None,
     lease_expires_at: datetime | None = None,
+    next_attempt_at: datetime | None = None,
 ) -> uuid.UUID:
     job_id = uuid.uuid4()
     with engine.connect() as conn:
@@ -58,10 +59,11 @@ def seed_job(
             text(
                 "INSERT INTO jobs "
                 "(id, type, payload, status, attempt, max_attempts, created_at, "
-                " lease_owner, lease_expires_at) "
+                " lease_owner, lease_expires_at, next_attempt_at) "
                 "VALUES (:id, :type, CAST(:payload AS jsonb), :status, :attempt, :max_attempts, "
                 " COALESCE(CAST(:created_at AS timestamptz), now()), "
-                " :lease_owner, CAST(:lease_expires_at AS timestamptz))"
+                " :lease_owner, CAST(:lease_expires_at AS timestamptz), "
+                " COALESCE(CAST(:next_attempt_at AS timestamptz), now()))"
             ),
             {
                 "id": job_id,
@@ -73,6 +75,7 @@ def seed_job(
                 "created_at": created_at,
                 "lease_owner": lease_owner,
                 "lease_expires_at": lease_expires_at,
+                "next_attempt_at": next_attempt_at,
             },
         )
         conn.commit()
@@ -84,19 +87,22 @@ def read_job(engine: Engine, job_id: uuid.UUID) -> Any:
         return conn.execute(text("SELECT * FROM jobs WHERE id = :id"), {"id": job_id}).one()
 
 
-def claim_once(database_url: str, worker_id: str, lease_seconds: int = 60) -> Job | None:
+def claim_once(
+    database_url: str, worker_id: str, lease_seconds: int = 60
+) -> tuple[Job, repository.ClaimKind] | None:
     """Claim once on a fresh connection owned by the calling thread.
 
-    Returns the claimed ``Job`` so callers work with the same type
-    ``repository.claim_next_job`` returns; a caller that only needs the id reads
-    ``job.id`` and cannot accidentally compare a ``Job`` against a ``UUID``.
+    Returns the claimed ``Job`` and its ``kind`` (``"reclaimed"`` or ``"pending"``)
+    so callers work with the same types ``repository.claim_next_job`` returns; a
+    caller that only needs the id reads ``claim[0].id`` and cannot accidentally
+    compare a ``Job`` against a ``UUID``. ``None`` when nothing was claimable.
     """
     factory = new_session_factory(database_url)
     try:
         with factory() as session:
-            job = repository.claim_next_job(session, worker_id, lease_seconds)
+            claim = repository.claim_next_job(session, worker_id, lease_seconds)
             session.commit()
-            return job
+            return claim
     finally:
         dispose(factory)
 
@@ -140,12 +146,18 @@ class ClaimRecorder:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self.claimed: dict[str, uuid.UUID | None] = {}
+        self.kinds: dict[str, str | None] = {}
 
     def claim(self, database_url: str, worker_id: str, lease_seconds: int = 60) -> None:
-        job = claim_once(database_url, worker_id, lease_seconds)
-        job_id: uuid.UUID | None = None if job is None else job.id
+        claim = claim_once(database_url, worker_id, lease_seconds)
+        job_id: uuid.UUID | None = None
+        kind: repository.ClaimKind | None = None
+        if claim is not None:
+            job_id = claim[0].id
+            kind = claim[1]
         with self._lock:
             self.claimed[worker_id] = job_id
+            self.kinds[worker_id] = kind
 
     def call(
         self, database_url: str, worker_id: str, lease_seconds: int = 60
