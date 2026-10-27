@@ -23,6 +23,12 @@ class Job(Base):
     max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
     result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    lease_owner: Mapped[str | None] = mapped_column(Text, nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -39,5 +45,22 @@ class Job(Base):
         CheckConstraint(r"type ~ '^[a-z][a-z0-9_.-]{0,63}$'", name="ck_jobs_type_shape"),
         CheckConstraint("jsonb_typeof(payload) = 'object'", name="ck_jobs_payload_object"),
         CheckConstraint("updated_at >= created_at", name="ck_jobs_updated_after_created"),
+        CheckConstraint(
+            "(lease_owner IS NULL AND lease_expires_at IS NULL) "
+            "OR (lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL)",
+            name="ck_jobs_lease_pair",
+        ),
+        CheckConstraint(
+            "status <> 'RUNNING' OR lease_owner IS NOT NULL", name="ck_jobs_running_has_lease"
+        ),
+        CheckConstraint(
+            "status NOT IN ('SUCCEEDED','FAILED') OR finished_at IS NOT NULL",
+            name="ck_jobs_terminal_has_finished",
+        ),
         Index("ix_jobs_claim", "status", "created_at", "id", postgresql_where="status = 'PENDING'"),
+        Index(
+            "ix_jobs_lease_expiry",
+            "lease_expires_at",
+            postgresql_where="status = 'RUNNING'",
+        ),
     )
