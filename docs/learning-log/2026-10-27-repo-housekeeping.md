@@ -5,7 +5,7 @@
 - Marked Project 2 PR-2-00 complete in the syllabus, Project 2 plan, and `02-async-job-api/README.md` (merged #11).
 - Updated the Project 1B plan with delivery status; recorded superseded #7 in the Project 1 completion evidence doc.
 - Deleted remote branches that were merged or superseded by work already on `main` (see list below).
-- Left draft [#12](https://github.com/rlancaster243/api-engineering-lab/pull/12) (`fix/project-1-audit-gaps`) open for optional Project 1 audit test follow-up.
+- Merged [#12](https://github.com/rlancaster243/api-engineering-lab/pull/12) (audit tests) and [#13](https://github.com/rlancaster243/api-engineering-lab/pull/13) (this doc pass); deleted their remote branches afterward.
 
 ## Remote branches removed
 

@@ -12,6 +12,8 @@
 | [#8](https://github.com/rlancaster243/api-engineering-lab/pull/8) | Project 1B auth + isolation |
 | [#9](https://github.com/rlancaster243/api-engineering-lab/pull/9) | PR-07 database → 503 |
 | [#10](https://github.com/rlancaster243/api-engineering-lab/pull/10) | PR-08 `/ready` + Gate E |
+| [#12](https://github.com/rlancaster243/api-engineering-lab/pull/12) | Audit test gaps (ready probe, F-027 race, error mapping) |
+| [#13](https://github.com/rlancaster243/api-engineering-lab/pull/13) | Repo housekeeping (plans, syllabus, branch notes) |
 
 ## ADRs accepted (Project 1)
 
@@ -26,5 +28,4 @@
 ## Open follow-ups
 
 - External IdP provider checklist in ADR 0005 (not required for local/CI).
-- Optional audit test hardening: draft [#12](https://github.com/rlancaster243/api-engineering-lab/pull/12) on `fix/project-1-audit-gaps`.
 - Project 2 PR-2-01+ per [project-2 plan](../plans/project-2-plan.md).
