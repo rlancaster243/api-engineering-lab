@@ -20,6 +20,15 @@ DbSession = Annotated[Session, Depends(get_session)]
 _MAX_PAYLOAD_BYTES = 64 * 1024  # 64 KiB
 
 
+def _result_object(result: Any) -> dict | None:
+    """The response contract is object-or-null; a legacy non-object row must not 500.
+
+    The worker refuses to store a non-dict result, so this only covers rows written
+    before that guard existed.
+    """
+    return result if isinstance(result, dict) else None
+
+
 class SubmitJobRequest(BaseModel):
     type: str = Field(..., pattern=r"^[a-z][a-z0-9_.\-]{0,63}$")
     payload: dict[str, Any]
@@ -89,6 +98,6 @@ def get_job(
         max_attempts=job.max_attempts,
         created_at=job.created_at,
         updated_at=job.updated_at,
-        result=job.result,
+        result=_result_object(job.result),
         last_error=job.last_error,
     )

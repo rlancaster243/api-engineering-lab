@@ -1,5 +1,6 @@
 """Application settings (fail closed at startup)."""
 
+import math
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -12,6 +13,7 @@ class ConfigError(Exception):
 DEFAULT_WORKER_POLL_SECONDS = 1.0
 DEFAULT_LEASE_SECONDS = 60
 _MAX_LEASE_SECONDS = 3600
+_MAX_WORKER_POLL_SECONDS = 3600.0
 
 
 @dataclass(frozen=True)
@@ -28,7 +30,7 @@ def sqlalchemy_url(url: str) -> str:
     return url
 
 
-def _positive_float(environ: Mapping[str, str], name: str, default: float) -> float:
+def _positive_float(environ: Mapping[str, str], name: str, default: float, maximum: float) -> float:
     raw = environ.get(name, "").strip()
     if not raw:
         return default
@@ -36,8 +38,10 @@ def _positive_float(environ: Mapping[str, str], name: str, default: float) -> fl
         value = float(raw)
     except ValueError:
         raise ConfigError(f"{name} must be a number, got {raw!r}") from None
-    if not value > 0:
-        raise ConfigError(f"{name} must be greater than 0, got {raw!r}")
+    if not math.isfinite(value):
+        raise ConfigError(f"{name} must be a finite number, got {raw!r}")
+    if not 0 < value <= maximum:
+        raise ConfigError(f"{name} must be greater than 0 and at most {maximum:g}, got {raw!r}")
     return value
 
 
@@ -64,7 +68,10 @@ def load_settings(environ: Mapping[str, str] = os.environ) -> Settings:
         database_url=sqlalchemy_url(database_url),
         app_env=environ.get("APP_ENV", "").strip(),
         worker_poll_seconds=_positive_float(
-            environ, "WORKER_POLL_SECONDS", DEFAULT_WORKER_POLL_SECONDS
+            environ,
+            "WORKER_POLL_SECONDS",
+            DEFAULT_WORKER_POLL_SECONDS,
+            _MAX_WORKER_POLL_SECONDS,
         ),
         lease_seconds=_lease_seconds(environ),
     )

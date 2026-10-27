@@ -15,7 +15,8 @@ _UNAVAILABLE_SQLSTATES = frozenset(
 )
 
 
-def _sqlstate(exc: BaseException) -> str | None:
+def sqlstate(exc: BaseException) -> str | None:
+    """The PostgreSQL SQLSTATE for a driver exception, when the driver exposes one."""
     orig = getattr(exc, "orig", None)
     if orig is None:
         return None
@@ -32,7 +33,7 @@ def is_service_unavailable(exc: BaseException) -> bool:
         return True
     if isinstance(exc, DBAPIError) and exc.connection_invalidated:
         return True
-    state = _sqlstate(exc)
+    state = sqlstate(exc)
     if state is not None and state in _UNAVAILABLE_SQLSTATES:
         return True
     orig = getattr(exc, "orig", None)
