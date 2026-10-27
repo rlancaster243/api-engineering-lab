@@ -1,7 +1,147 @@
-from sqlalchemy import Engine, text
+"""Migration tests."""
+
+import time
+import uuid
+from pathlib import Path
+from urllib.parse import urlparse, urlunparse
+
+import psycopg
+import pytest
+from alembic.config import Config
+from sqlalchemy import Engine, create_engine, text
+from sqlalchemy.exc import IntegrityError
+
+from alembic import command
+from app.config import sqlalchemy_url
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_migration_round_trip(migrated_database_url: str) -> None:
+    """Downgrade to base then upgrade to head on an isolated scratch database.
+
+    Uses its own CREATE/DROP DATABASE so it is independent of test ordering and
+    of the session-scoped migrated_engine fixture.
+    """
+    parsed = urlparse(migrated_database_url)
+    base_name = parsed.path.lstrip("/")
+    suffix = "_roundtrip"
+    scratch_name = base_name[: 63 - len(suffix)] + suffix
+    maintenance_url = urlunparse(parsed._replace(path="/postgres"))
+    scratch_url = urlunparse(parsed._replace(path=f"/{scratch_name}"))
+
+    maint = psycopg.connect(maintenance_url, autocommit=True)
+    try:
+        maint.execute(f'CREATE DATABASE "{scratch_name}"')
+    finally:
+        maint.close()
+
+    scratch_cfg = Config(str(_PROJECT_ROOT / "alembic.ini"))
+    scratch_cfg.set_main_option("script_location", str(_PROJECT_ROOT / "alembic"))
+    scratch_cfg.set_main_option("sqlalchemy.url", sqlalchemy_url(scratch_url))
+
+    engine = create_engine(sqlalchemy_url(scratch_url))
+    try:
+        # Full cycle: upgrade → downgrade → upgrade so every UPGRADE and DOWNGRADE
+        # path is exercised. Skipping the first upgrade means downgrade is a no-op
+        # and the test misses DROP TABLE / DROP FUNCTION failures.
+        command.upgrade(scratch_cfg, "head")
+        command.downgrade(scratch_cfg, "base")
+        command.upgrade(scratch_cfg, "head")
+
+        with engine.connect() as conn:
+            version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+            assert version == "0002_jobs"
+            result = conn.execute(
+                text(
+                    "SELECT table_name FROM information_schema.tables "
+                    "WHERE table_schema = 'public' AND table_name = 'jobs'"
+                )
+            ).scalar_one_or_none()
+            assert result == "jobs"
+    finally:
+        engine.dispose()
+        drop = psycopg.connect(maintenance_url, autocommit=True)
+        try:
+            drop.execute(f'DROP DATABASE "{scratch_name}" WITH (FORCE)')
+        finally:
+            drop.close()
 
 
 def test_migration_upgrade_from_clean_database(migrated_engine: Engine) -> None:
     with migrated_engine.connect() as connection:
         version = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-    assert version == "0001_initial_placeholder"
+    assert version == "0002_jobs"
+
+
+def test_jobs_table_exists(migrated_engine: Engine) -> None:
+    with migrated_engine.connect() as connection:
+        result = connection.execute(
+            text(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = 'public' AND table_name = 'jobs'"
+            )
+        ).scalar_one_or_none()
+    assert result == "jobs"
+
+
+def test_ck_jobs_status_rejects_invalid_value(migrated_engine: Engine) -> None:
+    """ck_jobs_status must reject values outside the allowed set."""
+    job_id = str(uuid.uuid4())
+    with pytest.raises(IntegrityError):
+        with migrated_engine.connect() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO jobs (id, type, payload, status) "
+                    "VALUES (:id, 'test.job', '{}', 'INVALID_STATUS')"
+                ),
+                {"id": job_id},
+            )
+            conn.commit()
+
+
+def test_trg_jobs_updated_at_fires(migrated_engine: Engine) -> None:
+    """trg_jobs_updated_at must advance updated_at on every UPDATE.
+
+    INSERT and UPDATE run in separate transactions so PostgreSQL's transaction-scoped
+    now() returns a later timestamp for the UPDATE. A 50 ms sleep between them
+    ensures the difference is measurable even on fast machines.
+    """
+    job_id = str(uuid.uuid4())
+
+    with migrated_engine.connect() as conn:
+        conn.execute(
+            text("INSERT INTO jobs (id, type, payload) VALUES (:id, 'trigger.test', '{}'::jsonb)"),
+            {"id": job_id},
+        )
+        conn.commit()
+
+    time.sleep(0.05)
+
+    with migrated_engine.connect() as conn:
+        conn.execute(text("UPDATE jobs SET status = 'RUNNING' WHERE id = :id"), {"id": job_id})
+        row = conn.execute(
+            text("SELECT created_at, updated_at FROM jobs WHERE id = :id"), {"id": job_id}
+        ).one()
+        conn.execute(text("DELETE FROM jobs WHERE id = :id"), {"id": job_id})
+        conn.commit()
+
+    assert row.updated_at > row.created_at, (
+        f"updated_at ({row.updated_at}) must be after created_at ({row.created_at}) "
+        "after an UPDATE — trigger may not be firing"
+    )
+
+
+def test_ck_jobs_updated_after_created_rejects_violation(migrated_engine: Engine) -> None:
+    """ck_jobs_updated_after_created must reject updated_at earlier than created_at."""
+    job_id = str(uuid.uuid4())
+    with pytest.raises(IntegrityError):
+        with migrated_engine.connect() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO jobs (id, type, payload, updated_at) "
+                    "VALUES (:id, 'constraint.test', '{}'::jsonb, '2000-01-01'::timestamptz)"
+                ),
+                {"id": job_id},
+            )
+            conn.commit()
