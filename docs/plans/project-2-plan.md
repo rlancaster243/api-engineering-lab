@@ -9,7 +9,7 @@ Project 1 (`01-rest-api/`) is complete on `main`. Project 2 (`02-async-job-api/`
 | PR | Branch focus | Deliverable |
 |----|----------------|-------------|
 | **PR-2-00** | Foundation | **Done** ([#11](https://github.com/rlancaster243/api-engineering-lab/pull/11)): `uv.lock`, config, SQLAlchemy, Alembic, compose, CI postgres job, ADRs 0010–0011 (Proposed) |
-| **PR-2-01** | Schema + submit | **Done** ([#15](https://github.com/rlancaster243/api-engineering-lab/pull/15)): `jobs` table, `POST /v1/jobs` → 202 after commit, `GET /v1/jobs/{id}` |
+| **PR-2-01** | Schema + submit | **In review** ([#15](https://github.com/rlancaster243/api-engineering-lab/pull/15)): `jobs` table, `POST /v1/jobs` → 202 after commit, `GET /v1/jobs/{id}` |
 | PR-2-02 | Worker | Claim/lease protocol, separate worker process |
 | PR-2-03 | Recovery | Retries, lease expiry, crash falsification tests |
 | PR-2-04 | Idempotency | `Idempotency-Key` header semantics per ADR 0011 |

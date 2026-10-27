@@ -28,7 +28,7 @@ class SubmitJobRequest(BaseModel):
     @field_validator("payload")
     @classmethod
     def payload_size(cls, v: dict) -> dict:
-        raw = json.dumps(v)
+        raw = json.dumps(v, allow_nan=False)
         if len(raw.encode()) > _MAX_PAYLOAD_BYTES:
             raise ValueError("payload exceeds 64 KiB limit")
         return v

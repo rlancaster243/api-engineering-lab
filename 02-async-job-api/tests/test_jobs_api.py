@@ -132,6 +132,41 @@ def test_max_attempts_above_20_returns_422(db_client: TestClient) -> None:
     assert resp.status_code == 422
 
 
+def test_payload_at_size_limit_accepted(db_client: TestClient) -> None:
+    """Payload of exactly 65,536 bytes (the cap) must be accepted.
+
+    json.dumps({"a": "x"*65527}) = 65536 bytes (> check is strict).
+    """
+    resp = db_client.post("/v1/jobs", json={"type": "echo", "payload": {"a": "x" * 65527}})
+    assert resp.status_code == 202
+
+
+def test_payload_one_byte_over_limit_rejected(db_client: TestClient) -> None:
+    """Payload of exactly 65,537 bytes must be rejected with VALIDATION_ERROR.
+
+    json.dumps({"a": "x"*65528}) = 65537 bytes.
+    The oversized body must not appear in the response.
+    """
+    resp = db_client.post("/v1/jobs", json={"type": "echo", "payload": {"a": "x" * 65528}})
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert "x" * 65528 not in resp.text
+
+
+def test_nan_in_payload_returns_422(db_client: TestClient) -> None:
+    """NaN in payload must return 422, not a 500 from the JSONB adapter.
+
+    httpx's json= helper does not allow NaN, so a raw body is required.
+    """
+    resp = db_client.post(
+        "/v1/jobs",
+        content=b'{"type": "echo", "payload": {"x": NaN}}',
+        headers={"Content-Type": "application/json"},
+    )
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
 # ---------------------------------------------------------------------------
 # Falsification case 5: DB unavailable → 503, no row created
 # ---------------------------------------------------------------------------

@@ -3,7 +3,7 @@
 ## Progression
 
 1. **PR-2-00 (Foundation):** Done ([#11](https://github.com/rlancaster243/api-engineering-lab/pull/11)) — install, `DATABASE_URL`, Alembic, `GET /health`, CI postgres job.
-2. **PR-2-01 (Schema + submit):** Done — `jobs` table (ADR 0010), `POST /v1/jobs` → 202 after commit, `GET /v1/jobs/{id}`.
+2. **PR-2-01 (Schema + submit):** In review ([#15](https://github.com/rlancaster243/api-engineering-lab/pull/15)) — `jobs` table (ADR 0010), `POST /v1/jobs` → 202 after commit, `GET /v1/jobs/{id}`.
 3. **PR-2-02 (next):** Worker — claim/lease protocol, separate worker process.
 4. **PR-2-03:** Recovery — retries, lease expiry, crash falsification tests.
 5. **PR-2-04:** Idempotency — `Idempotency-Key` per ADR 0011.

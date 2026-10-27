@@ -38,5 +38,6 @@ class Job(Base):
         CheckConstraint("max_attempts BETWEEN 1 AND 20", name="ck_jobs_max_attempts"),
         CheckConstraint(r"type ~ '^[a-z][a-z0-9_.-]{0,63}$'", name="ck_jobs_type_shape"),
         CheckConstraint("jsonb_typeof(payload) = 'object'", name="ck_jobs_payload_object"),
+        CheckConstraint("updated_at >= created_at", name="ck_jobs_updated_after_created"),
         Index("ix_jobs_claim", "status", "created_at", "id", postgresql_where="status = 'PENDING'"),
     )
