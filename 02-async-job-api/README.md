@@ -4,8 +4,8 @@
 
 1. **PR-2-00 (Foundation):** Done ([#11](https://github.com/rlancaster243/api-engineering-lab/pull/11)) — install, `DATABASE_URL`, Alembic, `GET /health`, CI postgres job.
 2. **PR-2-01 (Schema + submit):** Done (`dd365f2`) — `jobs` table (ADR 0010), `POST /v1/jobs` → 202 after commit, `GET /v1/jobs/{id}`.
-3. **PR-2-02 (Worker):** Claim/lease protocol, handler registry, separate worker process.
-4. **PR-2-03 (next):** Recovery — retries, lease expiry, crash falsification tests.
+3. **PR-2-02 (Worker):** Done ([#16](https://github.com/rlancaster243/api-engineering-lab/pull/16)) — claim/lease protocol, handler registry, separate worker process.
+4. **PR-2-03 (Recovery):** In review — retries with backoff, lease-expiry recovery, crash falsification tests.
 5. **PR-2-04:** Idempotency — `Idempotency-Key` per ADR 0011.
 
 ## Run locally
@@ -53,8 +53,49 @@ Each event is one JSON object on stdout:
 {"ts": "2026-10-27T18:40:00.123456+00:00", "level": "info", "event": "job.claimed", "worker_id": "host-1234-ab12cd34", "job_id": "...", "job_type": "echo", "attempt": 1, "lease_expires_at": "2026-10-27T18:41:00.123456+00:00", "message": "job.claimed"}
 ```
 
-Events: `worker.started`, `worker.stopped`, `job.claimed`, `job.succeeded`,
-`job.failed`, `job.lease_lost`. Payloads and results are never logged.
+Events: `worker.started`, `worker.stopped`, `job.claimed`, `job.recovered`,
+`job.succeeded`, `job.failed`, `job.retrying`, `job.lease_lost`. Payloads and results
+are never logged. `job.recovered` marks a job taken over from a worker whose lease
+expired; the accompanying `job.claimed` for the same row follows it.
+
+## Retries and crash recovery
+
+Every worker cycle runs a **sweep** before claiming:
+
+1. Expired `RUNNING` jobs with no attempts left are marked `FAILED` with a readable
+   `last_error` and `finished_at`. This is what stops a crashed job on its last
+   attempt from sitting in `RUNNING` forever.
+2. Then the claim runs, **reclaim first**: an expired `RUNNING` job with attempts
+   remaining is taken over before any `PENDING` work, so recovery cannot be starved
+   by a busy queue.
+3. Then due `PENDING` jobs, oldest first.
+
+A handler failure is recorded in **one** statement that returns either `PENDING`
+(requeue, attempts remain) or `FAILED` (attempts exhausted). Requeued jobs get
+`next_attempt_at = now() + backoff`, where backoff is exponential and capped:
+
+```
+delay = min(RETRY_BACKOFF_SECONDS * 2 ** (attempt - 1), MAX_RETRY_BACKOFF_SECONDS)
+```
+
+Without that deferral a job that always raises would burn every attempt in
+milliseconds and starve everything behind it. Succeeding is always terminal, whatever
+attempts remain.
+
+Handlers must finish inside `LEASE_SECONDS`. There is no heartbeat yet, so a handler
+that outlives its lease can be reclaimed and run twice.
+
+## Known limitations (PR-2-03)
+
+- **Recovery is worker-driven.** The sweep runs inside each worker. If no worker is
+  running, nothing is reclaimed or terminated.
+- **At-least-once, not exactly-once.** A reclaimed job runs its handler again. If the
+  handler had already produced an external side effect, that effect can happen twice.
+  Making side effects safe needs an outbox and reconciliation — PR-2-04 / ADR 0011.
+- **No heartbeat.** A handler that outlives `LEASE_SECONDS` can be reclaimed mid-run
+  and executed twice.
+- **No `Idempotency-Key`.** PR-2-04.
+- **No list endpoint, no auth, one `echo` handler.** Out of scope for this slice.
 
 ## Lint and test
 
@@ -76,17 +117,11 @@ Without `TEST_DATABASE_URL`, migration integration tests skip (CI postgres job s
 | `APP_ENV` | Reserved for later worker/API modes |
 | `WORKER_POLL_SECONDS` | Optional, default `1.0`. Worker sleep between empty polls; must be `> 0` |
 | `LEASE_SECONDS` | Optional, default `60`. Claim lease length; must be `> 0` and `< 3600` |
+| `RETRY_BACKOFF_SECONDS` | Optional, default `5`. Base retry delay; must be `> 0` and `<= 3600` |
+| `MAX_RETRY_BACKOFF_SECONDS` | Optional, default `300`. Backoff ceiling; `> 0`, `<= 3600`, and `>= RETRY_BACKOFF_SECONDS` |
 
-`WORKER_POLL_SECONDS` and `LEASE_SECONDS` are read by the worker only. Invalid
-values raise `ConfigError` and the worker exits non-zero rather than starting with
-a nonsensical lease.
-
-## Known limitation (PR-2-02)
-
-There is **no lease expiry recovery yet**. A worker that crashes mid-job leaves
-the row `RUNNING` with a lease that expires and is then never reclaimed — the job
-is stuck until PR-2-03 adds recovery. `attempt` is consumed at claim time (ADR
-0010), so the crash is still recorded against the job's attempt budget.
+These four are read by the worker only. Invalid values raise `ConfigError` and the
+worker exits non-zero rather than starting with a nonsensical lease or backoff.
 
 ## ADRs
 

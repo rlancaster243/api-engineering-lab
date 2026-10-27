@@ -50,6 +50,7 @@ def seed_job(
     created_at: datetime | None = None,
     lease_owner: str | None = None,
     lease_expires_at: datetime | None = None,
+    next_attempt_at: datetime | None = None,
 ) -> uuid.UUID:
     job_id = uuid.uuid4()
     with engine.connect() as conn:
@@ -57,10 +58,11 @@ def seed_job(
             text(
                 "INSERT INTO jobs "
                 "(id, type, payload, status, attempt, max_attempts, created_at, "
-                " lease_owner, lease_expires_at) "
+                " lease_owner, lease_expires_at, next_attempt_at) "
                 "VALUES (:id, :type, CAST(:payload AS jsonb), :status, :attempt, :max_attempts, "
                 " COALESCE(CAST(:created_at AS timestamptz), now()), "
-                " :lease_owner, CAST(:lease_expires_at AS timestamptz))"
+                " :lease_owner, CAST(:lease_expires_at AS timestamptz), "
+                " COALESCE(CAST(:next_attempt_at AS timestamptz), now()))"
             ),
             {
                 "id": job_id,
@@ -72,6 +74,7 @@ def seed_job(
                 "created_at": created_at,
                 "lease_owner": lease_owner,
                 "lease_expires_at": lease_expires_at,
+                "next_attempt_at": next_attempt_at,
             },
         )
         conn.commit()
@@ -83,14 +86,23 @@ def read_job(engine: Engine, job_id: uuid.UUID) -> Any:
         return conn.execute(text("SELECT * FROM jobs WHERE id = :id"), {"id": job_id}).one()
 
 
-def claim_once(database_url: str, worker_id: str, lease_seconds: int = 60) -> uuid.UUID | None:
-    """Claim once on a fresh connection owned by the calling thread."""
+def claim_once(
+    database_url: str, worker_id: str, lease_seconds: int = 60
+) -> tuple[uuid.UUID | None, str | None]:
+    """Claim once on a fresh connection owned by the calling thread.
+
+    Returns ``(job_id, kind)`` where ``kind`` is ``"reclaimed"`` or ``"pending"``,
+    or ``(None, None)`` when nothing was claimable.
+    """
     factory = new_session_factory(database_url)
     try:
         with factory() as session:
-            job = repository.claim_next_job(session, worker_id, lease_seconds)
+            claim = repository.claim_next_job(session, worker_id, lease_seconds)
             session.commit()
-            return None if job is None else job.id
+            if claim is None:
+                return None, None
+            job, kind = claim
+            return job.id, kind
     finally:
         dispose(factory)
 
@@ -129,11 +141,13 @@ class ClaimRecorder:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self.claimed: dict[str, uuid.UUID | None] = {}
+        self.kinds: dict[str, str | None] = {}
 
     def claim(self, database_url: str, worker_id: str, lease_seconds: int = 60) -> None:
-        job_id = claim_once(database_url, worker_id, lease_seconds)
+        job_id, kind = claim_once(database_url, worker_id, lease_seconds)
         with self._lock:
             self.claimed[worker_id] = job_id
+            self.kinds[worker_id] = kind
 
     def call(
         self, database_url: str, worker_id: str, lease_seconds: int = 60
