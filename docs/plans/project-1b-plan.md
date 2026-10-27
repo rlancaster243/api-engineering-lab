@@ -1,5 +1,9 @@
 # Plan: Project 1B — verified principals and owner enforcement (spec PR-05, PR-06)
 
+## Status
+
+**Complete on `main`.** PR-05 and PR-06 merged in [#8](https://github.com/rlancaster243/api-engineering-lab/pull/8). Draft [#7](https://github.com/rlancaster243/api-engineering-lab/pull/7) on `feature/1b-token-verification` was closed without merge (interim PR-05-only branch). This file is kept as the implementation record.
+
 ## Context
 
 Project 1A is closed on `main` (`a83c8a4`). The API works for a single seeded development owner in `AUTH_MODE=local_dev`; in the default `external_jwt` mode every item request returns `401 UNAUTHENTICATED` because no verifier exists (`01-rest-api/app/auth.py`). Phase 1B makes `external_jwt` real: verify provider-issued access tokens (PR-05), then map each verified `(issuer, subject)` to an internal user and prove two users cannot see or change each other's data (PR-06). Exit = **Gate C** in spec §10.
@@ -8,7 +12,7 @@ Decisions taken: scope is PR-05 + PR-06 only (PR-07 gets its own plan); no provi
 
 Working model (`CLAUDE.md`): I write briefs and review; a **Sonnet** subagent implements each PR; escalate to Opus only if review fails twice. Each PR is a draft, merged only on your word.
 
-## PR-05 — access-token verification (branch `feature/1b-token-verification`)
+## PR-05 — access-token verification (delivered in #8; historical branch `feature/1b-token-verification`)
 
 **Scope:** a verifier and its configuration, fully tested. Item routes stay `401` in `external_jwt` mode until PR-06 wires resolution in, so behavior on `main` stays fail-closed between the two merges.
 
@@ -59,11 +63,11 @@ Working model (`CLAUDE.md`): I write briefs and review; a **Sonnet** subagent im
 
 ## Open items to raise with you during the work
 
-- ADR 0005 status (Proposed until you accept); ADRs 0003/0004/0006/0007 still Proposed.
+- ADR 0005 external-provider checklist remains open; ADRs 0003–0009 are Accepted on `main`.
 - Real provider choice, and whether a scope is required, before any deployment beyond local + CI.
 - SELECT-first resolution (PR-06, step 1): approved with "go"; the spec note is updated in PR-06.
 
 ## First actions after approval
 
-1. Commit this plan as `docs/plans/project-1b-plan.md` on `feature/1b-token-verification` so it is readable in the app.
-2. Write the PR-05 brief and hand it to a Sonnet subagent; review per the protocol above; open a draft PR.
+1. ~~Commit this plan~~ — on `main` since the 1B work shipped.
+2. ~~Open PR-05/PR-06~~ — completed via #8.
