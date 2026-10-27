@@ -15,6 +15,15 @@ Proposed
 
 Duplicate HTTP retries after a timeout can safely reuse the same logical job without duplicate work, within the retention window.
 
+The explicit-reconciliation half of point 4 now exists: `0005_job_effects` adds a
+transactional outbox of `(job_id, effect_key)` claims, and the worker reconciles
+`INTENT` rows older than `EFFECT_RECONCILE_GRACE_SECONDS`. That makes a duplicate
+side effect detectable and skippable after a reclaim, and it covers a crash between
+the claim and the confirmation. It does not make a third-party call exactly-once:
+the external operation must still be idempotent, normally by passing `effect_key` as
+the vendor's idempotency key. The submission-key semantics in points 1–3 are still
+to come in PR-2-04b.
+
 ## References
 
 - [Project 2 plan](../plans/project-2-plan.md)

@@ -1,25 +1,102 @@
 """Job handler registry.
 
-A handler takes the job payload and returns the result dict stored on the job.
-Only ``echo`` ships in PR-2-02; it exists so the claim and lease tests have real
-work to interrupt.
+A handler takes the job payload plus a :class:`HandlerContext` and returns the
+result dict stored on the job. The context exists so a handler can reach the
+database without the registry holding global state: an effectful handler must
+claim its side effect in the outbox *before* it performs it (falsification case 4).
+
+``echo`` is the do-nothing handler the claim and lease tests interrupt. ``notify``
+is the effectful one: it claims ``(job_id, effect_key)`` at most once per job and
+applies only when the claim wins, so a reclaimed job re-runs the handler without
+re-applying the effect.
 """
 
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
-Handler = Callable[[dict], dict]
+from sqlalchemy.orm import Session, sessionmaker
+
+from app import repository
 
 MAX_ERROR_CHARS = 2000
 UNKNOWN_TYPE_MESSAGE = "no handler registered for type '{job_type}'"
 INVALID_RESULT_MESSAGE = "invalid handler result: expected dict, got {result_type}"
 
+DEFAULT_EFFECT_KEY = "notify"
 
-def _echo(payload: dict) -> dict:
+#: ``(job_id, effect_key, detail) -> None``. Performs the external call for an
+#: effect that has already been claimed in the outbox.
+EffectApplier = Callable[[uuid.UUID, str, dict[str, Any] | None], None]
+
+
+@dataclass(frozen=True)
+class HandlerContext:
+    """Everything a handler needs besides its payload.
+
+    ``session_factory`` rather than a live session: an effect claim must be
+    committed *before* the external call and the confirmation must be another
+    transaction, so the handler opens two short sessions instead of borrowing one
+    from the worker and holding it open across the effect.
+
+    ``apply_effect`` is the external call itself, injected so it is a seam rather
+    than a module global. Production gets the simulation below; a test passes a
+    counter, and the reconciler uses the same callable, so "applied once" is
+    observed the same way on both paths.
+    """
+
+    session_factory: sessionmaker[Session]
+    job_id: uuid.UUID
+    apply_effect: EffectApplier
+
+
+Handler = Callable[[dict, HandlerContext], dict]
+
+
+def simulate_effect(job_id: uuid.UUID, effect_key: str, detail: dict[str, Any] | None) -> None:
+    """The default applier: a simulated external call that reaches nothing.
+
+    This slice ships no third-party integration, so there is no vendor to call and
+    nothing to undo. The protocol is the deliverable — claim, commit, apply,
+    confirm. A real deployment passes its own applier (the one that sends the HTTP
+    request with ``effect_key`` as the vendor's idempotency key) and the outbox
+    guarantees the claim was durable first.
+    """
+
+
+def _echo(payload: dict, _context: HandlerContext) -> dict:
     return {"echoed": payload}
 
 
-HANDLERS: dict[str, Handler] = {"echo": _echo}
+def _notify(payload: dict, context: HandlerContext) -> dict:
+    """Apply a notification effect at most once per job.
+
+    The key comes from the payload and nowhere else: a key derived from time or
+    randomness would make every attempt a new effect, which is the bug this
+    handler exists to prevent. An attempt that loses the claim returns
+    ``skipped`` — it must not apply, because the winner already did.
+    """
+    effect_key = str(payload.get("effect_key", DEFAULT_EFFECT_KEY))
+    detail = {"effect_key": effect_key}
+
+    with context.session_factory() as session:
+        claimed = repository.claim_effect(
+            session, job_id=context.job_id, effect_key=effect_key, detail=detail
+        )
+        session.commit()
+    if not claimed:
+        return {"skipped": True, "effect_key": effect_key}
+
+    context.apply_effect(context.job_id, effect_key, detail)
+
+    with context.session_factory() as session:
+        repository.mark_effect_applied(session, job_id=context.job_id, effect_key=effect_key)
+        session.commit()
+    return {"applied": True, "effect_key": effect_key}
+
+
+HANDLERS: dict[str, Handler] = {"echo": _echo, "notify": _notify}
 
 
 def resolve(job_type: str) -> Handler | None:
