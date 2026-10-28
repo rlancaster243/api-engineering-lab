@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, Header, Request, Response
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
@@ -18,6 +18,32 @@ router = APIRouter(prefix="/v1/jobs")
 DbSession = Annotated[Session, Depends(get_session)]
 
 _MAX_PAYLOAD_BYTES = 64 * 1024  # 64 KiB
+_IDEMPOTENCY_KEY_MAX_LENGTH = 255
+
+IdempotencyKeyHeader = Annotated[str | None, Header(alias="Idempotency-Key")]
+
+
+def _idempotency_key(raw: str | None) -> str | None:
+    """Normalise the header before it is stored or hashed.
+
+    Trimming first is what makes ``" abc "`` and ``"abc"`` one key rather than two
+    jobs that look identical to the client, and it keeps the stored value the one
+    the fingerprint was computed over. An all-whitespace header is treated as
+    absent: it carries no usable identity, and rejecting it would fail a request
+    that is otherwise well formed for a reason the client cannot see.
+
+    The length limit is enforced here, not by Pydantic, because Pydantic's own
+    message can quote the offending value. ``ApiError`` renders the fixed envelope
+    instead.
+    """
+    if raw is None:
+        return None
+    key = raw.strip()
+    if not key:
+        return None
+    if len(key) > _IDEMPOTENCY_KEY_MAX_LENGTH:
+        raise ApiError(ErrorCode.VALIDATION_ERROR)
+    return key
 
 
 def _result_object(result: Any) -> dict | None:
@@ -67,14 +93,19 @@ def submit_job(
     response: Response,
     request: Request,
     session: DbSession,
+    idempotency_key: IdempotencyKeyHeader = None,
 ) -> SubmitJobResponse:
-    job = service.submit_job(
+    outcome = service.submit_job(
         session,
         job_type=body.type,
         payload=body.payload,
         max_attempts=body.max_attempts,
+        idempotency_key=_idempotency_key(idempotency_key),
     )
+    job = outcome.job
     response.headers["Location"] = str(request.url_for("get_job", job_id=str(job.id)))
+    if outcome.replayed:
+        response.headers["Idempotency-Replayed"] = "true"
     return SubmitJobResponse(
         id=job.id,
         status=job.status,

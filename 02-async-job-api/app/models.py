@@ -32,6 +32,8 @@ class Job(Base):
     next_attempt_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+    idempotency_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    request_fingerprint: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -59,6 +61,17 @@ class Job(Base):
         CheckConstraint(
             "status NOT IN ('SUCCEEDED','FAILED') OR finished_at IS NOT NULL",
             name="ck_jobs_terminal_has_finished",
+        ),
+        CheckConstraint(
+            "(idempotency_key IS NULL AND request_fingerprint IS NULL) "
+            "OR (idempotency_key IS NOT NULL AND request_fingerprint IS NOT NULL)",
+            name="ck_jobs_idempotency_pair",
+        ),
+        Index(
+            "ux_jobs_idempotency_key",
+            "idempotency_key",
+            unique=True,
+            postgresql_where="idempotency_key IS NOT NULL",
         ),
         Index("ix_jobs_claim", "status", "created_at", "id", postgresql_where="status = 'PENDING'"),
         Index(
