@@ -6,8 +6,11 @@
 2. **PR-2-01 (Schema + submit):** Done (`dd365f2`) — `jobs` table (ADR 0010), `POST /v1/jobs` → 202 after commit, `GET /v1/jobs/{id}`.
 3. **PR-2-02 (Worker):** Done ([#16](https://github.com/rlancaster243/api-engineering-lab/pull/16)) — claim/lease protocol, handler registry, separate worker process.
 4. **PR-2-03 (Recovery):** Done ([#17](https://github.com/rlancaster243/api-engineering-lab/pull/17)) — retries with backoff, lease-expiry recovery, crash falsification tests.
-5. **PR-2-04a (Effects):** This branch — transactional outbox plus reconciler, so a reclaimed job does not repeat an external side effect (falsification case 4).
-6. **PR-2-04b (Idempotency):** `Idempotency-Key` per ADR 0011.
+5. **PR-2-04a (Effects):** Done ([#19](https://github.com/rlancaster243/api-engineering-lab/pull/19)) — transactional outbox plus reconciler, so a reclaimed job does not repeat an external side effect (falsification case 4).
+6. **PR-2-04b (Idempotency):** Done — `Idempotency-Key` on `POST /v1/jobs` per ADR 0011, so a retried submission replays one job instead of creating a second.
+
+**Project 2 is complete.** Submission idempotency, the job store, the worker, retry
+and lease recovery, and the effect outbox are all in place.
 
 ## Run locally
 
@@ -30,6 +33,56 @@ curl -s http://127.0.0.1:8002/v1/jobs/<id> | jq .
 ```
 
 Postgres is published on host port **5433** to avoid clashing with Project 1 on 5432.
+
+## Submission idempotency (`Idempotency-Key`)
+
+`POST /v1/jobs` accepts an optional **`Idempotency-Key`** header (ADR 0011). It is
+opaque to the service — any string up to **255 characters** — and is trimmed of
+surrounding whitespace before it is stored or hashed, so `" abc "` and `"abc"` are
+the same key. An empty or all-whitespace header is treated as if it were absent.
+
+```bash
+# Same key, same body: one job, replayed
+curl -s -X POST http://127.0.0.1:8002/v1/jobs \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: create-order-42" \
+  -d '{"type": "echo", "payload": {"msg": "hello"}}' -D - | grep -i idempotency
+
+# Same key, different body: 409
+curl -s -X POST http://127.0.0.1:8002/v1/jobs \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: create-order-42" \
+  -d '{"type": "echo", "payload": {"msg": "goodbye"}}' | jq .
+```
+
+Semantics:
+
+| Situation | Result |
+|-----------|--------|
+| No header | Every POST creates a new job (the pre-existing behaviour). |
+| New key | `202`, `Location`, a new `job_id`. No `Idempotency-Replayed` header. |
+| Same key, same request | `202`, the **same** `job_id` and the same `Location`, plus `Idempotency-Replayed: true`. No second row. |
+| Same key, different request | `409` with code `IDEMPOTENCY_CONFLICT`. No new row, and the original job is untouched. |
+| Key longer than 255 chars | `422` with code `VALIDATION_ERROR`. The submitted key is not echoed. |
+| All-whitespace key | Treated as absent — a new job, no key stored. |
+
+The comparison is a SHA-256 over a canonical JSON form of `type`, `payload` and
+`max_attempts`, with sorted keys, so the order of fields in the client's body cannot
+produce a spurious `409`. `max_attempts` counts as part of the request: the default
+`3` and an explicit `3` are the same request, but `5` under the same key is a `409`.
+
+The key is **not** a client identity. There is no auth in this slice, so two clients
+sending `abc` address the same job, and a caller can probe for an existing key by
+observing `409`. Do not send a secret as a key. A key is retained for the life of the
+job row; there is no separate expiry.
+
+**What this makes safe — and what it does not.** A duplicate *submission* — the
+classic retry after a timeout, where the client never saw the `202` — collapses to
+one job. It says nothing about duplicate *side effects*: a job that is reclaimed and
+re-run still enters its handler again. That is what the outbox covers (see "Side
+effects and the outbox", and PR-2-04a in [#19](https://github.com/rlancaster243/api-engineering-lab/pull/19)).
+Use both: the key stops the duplicate job existing, the outbox stops a re-run
+applying a duplicate effect.
 
 ## Run the worker
 
@@ -149,7 +202,7 @@ attempts remain.
 Handlers must finish inside `LEASE_SECONDS`. There is no heartbeat yet, so a handler
 that outlives its lease can be reclaimed and run twice.
 
-## Known limitations (PR-2-04a)
+## Known limitations (PR-2-04)
 
 - **Recovery is worker-driven.** The sweep and the reconcile both run inside each
   worker. If no worker is running, nothing is reclaimed, terminated or reconciled.
@@ -166,7 +219,6 @@ that outlives its lease can be reclaimed and run twice.
   this slice does not model.
 - **No heartbeat.** A handler that outlives `LEASE_SECONDS` can be reclaimed mid-run
   and executed twice.
-- **No `Idempotency-Key`.** PR-2-04b.
 - **No list endpoint, no auth, and only `echo` and `notify`.** Out of scope for this
   slice.
 
@@ -198,6 +250,12 @@ These five are read by the worker only. Invalid values raise `ConfigError` and t
 worker exits non-zero rather than starting with a nonsensical lease, backoff or
 reconcile grace.
 
+`Idempotency-Key` adds **no setting**. The 255-character cap is a protocol constant,
+not deployment config: two instances of this service must agree on what a key is and
+what a fingerprint covers, so making either tunable per-environment would let a key
+that replays on one instance `409` on another. The only per-deployment input is the
+database itself, which is already `DATABASE_URL`.
+
 The worker survives a bad cycle rather than exiting: a sweep that raises, a claim
 that raises, a handler that raises or returns a non-object, and a result the
 database refuses to store are each logged as `error_class` under
@@ -213,7 +271,7 @@ and re-writing under a lost lease would overwrite the new owner's row.
 `jobs.result` has no `jsonb_typeof(result) = 'object'` constraint: the worker
 refuses to store a non-object result, and `GET /v1/jobs/{id}` serves a non-object
 result as `null`, but a database-level guarantee needs a migration that this branch
-(already at `0005_job_effects`) does not carry.
+(already at `0006_job_idempotency`) does not carry.
 
 ## Known limitation (logging)
 
@@ -228,4 +286,4 @@ echoing the request body.
 ## ADRs
 
 - [0010 Postgres job store](../docs/decisions/0010-postgres-job-store.md) (Accepted)
-- [0011 Job idempotency](../docs/decisions/0011-job-idempotency.md) (Proposed)
+- [0011 Job idempotency](../docs/decisions/0011-job-idempotency.md) (Accepted)

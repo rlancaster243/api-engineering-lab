@@ -155,8 +155,86 @@ LOCK_PENDING_EFFECT_SQL = text("""
 """)
 
 
-def insert_job(session: Session, job: Job) -> None:
-    session.add(job)
+# ``WHERE idempotency_key IS NOT NULL`` is not decoration: PostgreSQL only uses a
+# partial unique index as an arbiter when the statement repeats its predicate, and
+# without it the insert raises InvalidColumnReference rather than conflicting. The
+# index is partial because a unique index over a nullable column would make "no
+# key" one shared key, which would let exactly one unkeyed job exist.
+#
+# Single statement on purpose: insert-or-nothing is the whole race guarantee. The
+# read of the winner's row happens only in the caller's ``None`` branch, so two
+# concurrent submissions of one key cannot both decide to insert. Unkeyed inserts go
+# through the same statement — a NULL key never conflicts with the partial index, so
+# one code path covers both and neither can drift from the other.
+INSERT_JOB_SQL = text(
+    """
+    INSERT INTO jobs (id, type, payload, max_attempts, idempotency_key, request_fingerprint)
+    VALUES (
+        :id, :type, CAST(:payload AS jsonb), :max_attempts, :idempotency_key, :request_fingerprint
+    )
+    ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
+    RETURNING *
+    """
+).bindparams(bindparam("payload", type_=JSONB(none_as_null=True)))
+
+GET_JOB_BY_IDEMPOTENCY_KEY_SQL = text("""
+    SELECT * FROM jobs WHERE idempotency_key = :idempotency_key
+""")
+
+
+def _execute_insert(session: Session, job: Job) -> Job | None:
+    row = session.execute(
+        INSERT_JOB_SQL,
+        {
+            "id": job.id,
+            "type": job.type,
+            "payload": job.payload,
+            "max_attempts": job.max_attempts,
+            "idempotency_key": job.idempotency_key,
+            "request_fingerprint": job.request_fingerprint,
+        },
+    ).one_or_none()
+    if row is None:
+        return None
+    return Job(**row._mapping)  # type: ignore[arg-type]
+
+
+def insert_job(session: Session, job: Job) -> Job:
+    """Insert an unkeyed job and return the stored row.
+
+    The stored row is returned rather than the object passed in because
+    ``created_at``, ``updated_at`` and ``next_attempt_at`` are server defaults: a
+    directly executed INSERT does not populate them on the ORM object, and the 202
+    body needs ``created_at``. A NULL key never conflicts under the partial index,
+    so ``None`` here would mean the row was silently dropped.
+    """
+    inserted = _execute_insert(session, job)
+    assert inserted is not None, "an unkeyed insert cannot conflict"
+    return inserted
+
+
+def insert_job_idempotent(
+    session: Session,
+    *,
+    job: Job,
+    idempotency_key: str,
+    request_fingerprint: str,
+) -> Job | None:
+    """Insert ``job`` under ``idempotency_key``; ``None`` when the key is taken.
+
+    ``None`` means another submission already owns the key — the caller must read
+    that row and compare fingerprints, not retry the insert.
+    """
+    job.idempotency_key = idempotency_key
+    job.request_fingerprint = request_fingerprint
+    return _execute_insert(session, job)
+
+
+def get_job_by_idempotency_key(session: Session, key: str) -> Job | None:
+    row = session.execute(GET_JOB_BY_IDEMPOTENCY_KEY_SQL, {"idempotency_key": key}).one_or_none()
+    if row is None:
+        return None
+    return Job(**row._mapping)  # type: ignore[arg-type]
 
 
 def get_job_by_id(session: Session, job_id: uuid.UUID) -> Job | None:
