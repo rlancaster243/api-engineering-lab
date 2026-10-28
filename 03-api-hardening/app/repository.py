@@ -56,13 +56,14 @@ class AssetRepository:
             ),
         )
         self.connection.commit()
-        row = self.get_by_id(asset_id)
+        row = self.get_by_id(tenant_id, asset_id)
         assert row is not None
         return row
 
-    def get_by_id(self, asset_id: str) -> sqlite3.Row | None:
+    def get_by_id(self, tenant_id: str, asset_id: str) -> sqlite3.Row | None:
         return self.connection.execute(
-            f"SELECT {ASSET_COLUMNS} FROM assets WHERE id = ?", (asset_id,)
+            f"SELECT {ASSET_COLUMNS} FROM assets WHERE id = ? AND tenant_id = ?",
+            (asset_id, tenant_id),
         ).fetchone()
 
     def list_for_tenant(self, tenant_id: str, limit: int) -> list[sqlite3.Row]:
