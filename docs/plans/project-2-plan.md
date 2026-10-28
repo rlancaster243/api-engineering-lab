@@ -14,8 +14,18 @@ Project 1 (`01-rest-api/`) is complete on `main`. Project 2 (`02-async-job-api/`
 | **PR-2-03** | Recovery | **Done** ([#17](https://github.com/rlancaster243/api-engineering-lab/pull/17)): sweep for exhausted expired leases, reclaim probe, retry with backoff, real-crash falsification tests |
 | **PR-2-04a** | Effects | **Done** ([#19](https://github.com/rlancaster243/api-engineering-lab/pull/19)): transactional outbox and reconciler, falsification case 4 |
 | **PR-2-04b** | Idempotency | **Done** ([#20](https://github.com/rlancaster243/api-engineering-lab/pull/20)): `Idempotency-Key` header semantics per ADR 0011 |
+| **PR-2-06** | Heartbeat | **In review** ([#22](https://github.com/rlancaster243/api-engineering-lab/pull/22)): lease heartbeat, live-lease guard on the reconciler |
 
-Project 2 is complete on `main` at merge `f016f30`. Completion record:
+`Done` in this table means merged. PR-2-06 is open, so it is marked **In review**
+rather than **Done**; the row flips to `Done` with its merge commit once #22 lands.
+README item 7 likewise describes PR-2-06 without a completed marker.
+
+Project 2 is complete on `main` at the closing-docs merge `de6ffe0` (PR
+[#21](https://github.com/rlancaster243/api-engineering-lab/pull/21)); the code PRs
+through PR-2-04b ([#20](https://github.com/rlancaster243/api-engineering-lab/pull/20))
+are all merged beneath it. PR-2-06 ([#22](https://github.com/rlancaster243/api-engineering-lab/pull/22))
+adds the lease heartbeat and the reconciler's live-lease guard on top, and is in
+review. Completion record:
 [`docs/evidence/project-2-completion.md`](../evidence/project-2-completion.md).
 
 ## State machine

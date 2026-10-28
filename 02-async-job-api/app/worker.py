@@ -78,11 +78,6 @@ LEASE_EXHAUSTED_MESSAGE = "lease expired after {attempt} attempt(s); no attempts
 #: risk, and a renewal that lands late still lands inside the current lease.
 LEASE_RENEWAL_DIVISOR = 3
 
-#: Floor for the renewal interval. The configuration refuses a lease below one
-#: second, so this is arithmetic insurance rather than a real setting: a zero or
-#: negative interval would turn the heartbeat into a busy loop.
-MIN_RENEWAL_INTERVAL_SECONDS = 0.05
-
 #: Thread-name prefix for a heartbeat, so a test can find one without reaching into
 #: the worker's internals.
 HEARTBEAT_THREAD_NAME_PREFIX = "job-lease-heartbeat"
@@ -97,9 +92,11 @@ def renewal_interval_seconds(lease_seconds: int) -> float:
 
     Pure, and exported, so the ratio can be asserted without waiting for a thread to
     tick. Not a setting: it is derived from ``LEASE_SECONDS`` so a deployment cannot
-    configure a renewal cadence that outlives the lease it is renewing.
+    configure a renewal cadence that outlives the lease it is renewing. The
+    configuration validates ``LEASE_SECONDS`` as an integer greater than zero, so a
+    zero or negative interval is not reachable and needs no clamp.
     """
-    return max(lease_seconds / LEASE_RENEWAL_DIVISOR, MIN_RENEWAL_INTERVAL_SECONDS)
+    return lease_seconds / LEASE_RENEWAL_DIVISOR
 
 
 class _LeaseHeartbeat:
@@ -122,7 +119,15 @@ class _LeaseHeartbeat:
     ``lease_owner``-scoped, so they cannot overwrite the new owner's row.
 
     A renewal that raises is logged by class and the loop carries on: a transient
-    database error must cost one renewal, not the heartbeat or the worker.
+    database error must cost one renewal, not the heartbeat or the worker. That
+    includes the statement's own ``lock_timeout`` — a renewal blocked behind a
+    concurrent reclaim gives up after ``RENEWAL_LOCK_TIMEOUT_MS`` instead of waiting,
+    which is what keeps ``stop``'s unbounded join from hanging the worker.
+
+    The cost is that ``LEASE_SECONDS`` no longer bounds handler runtime at all: a
+    handler that never returns is never reclaimed, because its heartbeat keeps the
+    lease alive forever. Nothing here bounds how long a handler may run; see the
+    README's known limitations.
     """
 
     def __init__(
@@ -188,7 +193,16 @@ class _LeaseHeartbeat:
                     worker_id=self._worker_id,
                     lease_seconds=self._lease_seconds,
                 )
-                session.commit()
+                if renewed:
+                    session.commit()
+                else:
+                    # Nothing was written, so this is not a commit. The transaction
+                    # still has to be ended here — ``renew_lease`` opens one with
+                    # ``SET LOCAL lock_timeout`` before its statement — and a
+                    # rollback is the honest end for a renewal that changed nothing.
+                    # It also discards the ``SET LOCAL``, so the timeout cannot
+                    # outlive the renewal on this connection.
+                    session.rollback()
         except Exception as error:  # one failed renewal must not kill the thread
             self._on_write_error("lease renewal", error)
             return True

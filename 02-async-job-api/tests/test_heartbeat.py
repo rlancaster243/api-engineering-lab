@@ -33,14 +33,15 @@ from typing import Any
 
 import pytest
 from sqlalchemy import Engine, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app import handlers, repository
 from app.logging import configure_logging
 from app.worker import (
     HEARTBEAT_THREAD_NAME_PREFIX,
-    MIN_RENEWAL_INTERVAL_SECONDS,
     Worker,
+    _LeaseHeartbeat,
     renewal_interval_seconds,
     run_once,
 )
@@ -462,19 +463,20 @@ def test_lease_lost_mid_handler_is_logged_and_the_completion_is_refused(
 
 
 def test_renewal_interval_is_a_third_of_the_lease() -> None:
-    """The pure statement of the cadence, and the clamp for a one-second lease.
+    """The pure statement of the cadence, for the smallest lease and the default.
 
     This is what fails if the interval is changed to the full lease: the ratio is
     the safety margin, and expressing it as ``LEASE_SECONDS`` leaves no room for a
     slow renewal. It is checked here rather than through timing because the ratio is
     the contract and a wall-clock assertion would only sample it.
+
+    The smallest lease the configuration accepts is one second, so the interval is
+    always positive — there is no clamp, and none is needed.
     """
     assert renewal_interval_seconds(60) == pytest.approx(20.0)
     assert renewal_interval_seconds(3) == pytest.approx(1.0)
     assert renewal_interval_seconds(1) == pytest.approx(1 / 3)
     assert renewal_interval_seconds(1) < LEASE_SECONDS
-    assert renewal_interval_seconds(0) == MIN_RENEWAL_INTERVAL_SECONDS
-    assert renewal_interval_seconds(0) > 0
 
 
 def test_no_renewal_thread_survives_a_run_and_none_fires_after_it(
@@ -956,24 +958,31 @@ def test_lock_pending_effect_decision_matrix(
 def test_effect_lock_does_not_block_a_concurrent_heartbeat(
     migrated_engine: Engine, database_url: str
 ) -> None:
-    """``FOR UPDATE OF je``, not bare ``FOR UPDATE``.
+    """``FOR UPDATE OF je``, not bare ``FOR UPDATE`` — and the heartbeat's real statement.
 
     A bare ``FOR UPDATE`` on the join also locks the ``jobs`` row, which means the
     reconciler holds the heartbeat off for the whole apply-and-confirm. That inverts
     the guard: the heartbeat is what keeps a live handler's lease alive, so blocking
     it is how a live job becomes an expired one and gets reconciled.
 
-    One session holds the effect lock; a second runs the heartbeat's exact
-    ``UPDATE jobs SET lease_expires_at = ...``. It must not wait. The holder waits up
-    to five seconds for it, so a blocked heartbeat shows up as a slow one rather than
-    as a hung test.
+    One session holds the effect lock; a second runs the heartbeat's own statement,
+    ``repository.renew_lease``, in its own session and commits. Two things are
+    therefore covered: the lock is not on the ``jobs`` row, and ``RENEW_LEASE_SQL``
+    itself executes without blocking. A raw ``UPDATE`` here would only prove the
+    first, leaving the statement the worker actually sends free to regress.
+
+    ``lease_owner`` is the owner passed as ``worker_id``, and the result is asserted
+    ``True``, so a renewal that matched zero rows cannot pass this for the wrong
+    reason. The holder waits up to five seconds for the renewal, so a blocked
+    heartbeat shows up as a slow one rather than as a hung test.
     """
+    owner = "worker-dead"
     job_id = seed_job(migrated_engine, job_type="echo")
     mark_job(
         migrated_engine,
         job_id,
         status="RUNNING",
-        owner="worker-dead",
+        owner=owner,
         lease_seconds_from_now=-300,
     )
     seed_effect(migrated_engine, job_id=job_id, age=600)
@@ -981,6 +990,7 @@ def test_effect_lock_does_not_block_a_concurrent_heartbeat(
     locked = threading.Event()
     update_done = threading.Event()
     elapsed: list[float] = []
+    renewed: list[bool] = []
 
     def _holder() -> None:
         factory = new_session_factory(database_url)
@@ -991,7 +1001,7 @@ def test_effect_lock_does_not_block_a_concurrent_heartbeat(
                     is not None
                 ), "the holder could not take the effect lock"
                 locked.set()
-                assert update_done.wait(timeout=5), "the heartbeat's update never completed"
+                assert update_done.wait(timeout=5), "the heartbeat's renewal never completed"
                 session.rollback()
         finally:
             dispose(factory)
@@ -1002,12 +1012,10 @@ def test_effect_lock_does_not_block_a_concurrent_heartbeat(
         try:
             with factory() as session:
                 started = time.monotonic()
-                session.execute(
-                    text(
-                        "UPDATE jobs SET lease_expires_at = now() + interval '60 seconds' "
-                        "WHERE id = :id"
-                    ),
-                    {"id": job_id},
+                renewed.append(
+                    repository.renew_lease(
+                        session, job_id=job_id, worker_id=owner, lease_seconds=60
+                    )
                 )
                 session.commit()
                 elapsed.append(time.monotonic() - started)
@@ -1017,6 +1025,7 @@ def test_effect_lock_does_not_block_a_concurrent_heartbeat(
 
     errors = run_concurrently(_holder, _heartbeat)
     assert errors == [None, None], f"a participant raised {errors}"
+    assert renewed == [True], "the renewal matched no row, so the lock was never exercised"
     assert elapsed, "the heartbeat never ran"
     assert elapsed[0] < 2.0, (
         f"the heartbeat waited {elapsed[0]:.2f}s behind the effect lock; "
@@ -1025,5 +1034,199 @@ def test_effect_lock_does_not_block_a_concurrent_heartbeat(
 
     row = read_job(migrated_engine, job_id)
     assert row.lease_expires_at is not None
-    assert row.lease_owner == "worker-dead"
+    assert row.lease_owner == owner
     assert read_effect(migrated_engine, job_id).status == "INTENT"
+
+
+# ---------------------------------------------------------------------------
+# 8. A blocked renewal gives up, so ``stop``'s unbounded join cannot hang
+# ---------------------------------------------------------------------------
+
+
+def _call_with_deadline(call: Any, deadline: float) -> tuple[Any, dict[str, Any], float]:
+    """Run ``call`` on a thread and give up waiting after ``deadline`` seconds.
+
+    A blocked renewal is exactly what these tests must detect, so the wait on it has
+    to be bounded here too — otherwise the mutation that removes the lock timeout
+    turns the test into a hang rather than a failure. Returns the thread, whatever
+    the call produced (``{"value": ...}`` or ``{"error": ...}``), and the elapsed time.
+    """
+    outcome: dict[str, Any] = {}
+
+    def _run() -> None:
+        try:
+            outcome["value"] = call()
+        except BaseException as error:  # noqa: BLE001 - reported by the caller's assertions
+            outcome["error"] = error
+
+    thread = threading.Thread(target=_run, daemon=True)
+    started = time.monotonic()
+    thread.start()
+    thread.join(timeout=deadline)
+    return thread, outcome, time.monotonic() - started
+
+
+def test_a_blocked_renewal_gives_up_instead_of_waiting_on_the_job_row(
+    migrated_engine: Engine, database_url: str
+) -> None:
+    """A reclaim holding the job row must not block the heartbeat indefinitely.
+
+    ``_LeaseHeartbeat.stop`` joins without a timeout, and it has to: a renewal that
+    committed after the completion would leave a finished row holding a live lease.
+    That is only safe if the statement the join waits on is itself bounded, so
+    ``renew_lease`` sets ``SET LOCAL lock_timeout`` before its update. Held up by a
+    concurrent ``SELECT ... FOR UPDATE`` on the same row, it must fail with SQLSTATE
+    ``55P03`` in roughly half a second rather than waiting for the holder to finish.
+
+    The failure is asserted as an exception rather than a ``False`` return because a
+    lock is not a lost lease: ``False`` would stop the heartbeat permanently.
+    """
+    job_id = seed_job(migrated_engine, job_type="echo")
+    mark_job(
+        migrated_engine,
+        job_id,
+        status="RUNNING",
+        owner="worker-holder",
+        lease_seconds_from_now=60,
+    )
+    before = read_job(migrated_engine, job_id)
+
+    factory = new_session_factory(database_url)
+    holder = new_session_factory(database_url)
+    holder_session = holder()
+    thread: threading.Thread | None = None
+
+    def _renew() -> bool:
+        with factory() as session:
+            return repository.renew_lease(
+                session, job_id=job_id, worker_id="worker-holder", lease_seconds=600
+            )
+
+    try:
+        holder_session.execute(
+            text("SELECT id FROM jobs WHERE id = :id FOR UPDATE"), {"id": job_id}
+        )
+        thread, outcome, elapsed = _call_with_deadline(_renew, deadline=5.0)
+        assert not thread.is_alive(), (
+            f"the renewal was still blocked after {elapsed:.2f}s on the job row; "
+            "the statement has no lock timeout"
+        )
+    finally:
+        holder_session.rollback()
+        holder_session.close()
+        if thread is not None:
+            thread.join(timeout=10)
+        dispose(factory)
+        dispose(holder)
+
+    error = outcome.get("error")
+    assert isinstance(error, OperationalError), (
+        f"the renewal failed for a reason other than the lock timeout: {outcome!r}"
+    )
+    assert getattr(error.orig, "sqlstate", None) == "55P03", (
+        f"expected SQLSTATE 55P03 from the lock timeout, got {error!r}"
+    )
+    assert elapsed < 5.0, f"the renewal blocked for {elapsed:.2f}s; the lock timeout is not set"
+    assert elapsed >= 0.25, (
+        f"the renewal failed after {elapsed:.3f}s, before a 500ms timeout could expire; "
+        "something other than the timeout raised"
+    )
+
+    after = read_job(migrated_engine, job_id)
+    assert after.lease_expires_at == before.lease_expires_at, (
+        "a renewal that timed out still moved the lease"
+    )
+
+
+def test_a_blocked_renewal_costs_one_tick_and_the_heartbeat_then_recovers(
+    migrated_engine: Engine,
+    database_url: str,
+    log_stream: io.StringIO,
+) -> None:
+    """A timed-out renewal is one missed tick, not a lost lease or a dead heartbeat.
+
+    The job row is held by a second session, exactly as a concurrent reclaim holds
+    it. ``_renew_once`` must return ``True`` — the ``False`` that means "stop
+    renewing" is reserved for a zero-row renewal — with the failure logged by class
+    and nothing of the driver's message or traceback on the line. Once the holder
+    lets go, the next renewal succeeds and moves the lease, which is why the
+    unbounded join in ``stop`` cannot hang on a finished handler.
+    """
+    owner = "worker-blocked"
+    job_id = seed_job(migrated_engine, job_type="echo")
+    mark_job(
+        migrated_engine,
+        job_id,
+        status="RUNNING",
+        owner=owner,
+        lease_seconds_from_now=60,
+    )
+    before = read_job(migrated_engine, job_id)
+
+    logger = configure_logging(log_stream)
+    factory = new_session_factory(database_url)
+    holder = new_session_factory(database_url)
+    worker = Worker(
+        factory,
+        lease_seconds=60,
+        poll_seconds=0.01,
+        worker_id=owner,
+        logger=logger,
+    )
+    heartbeat = _LeaseHeartbeat(
+        factory,
+        job_id=job_id,
+        attempt=1,
+        worker_id=owner,
+        lease_seconds=60,
+        logger=logger,
+        on_write_error=lambda action, error: worker._log_write_error(action, None, error),
+    )
+    holder_session = holder()
+    thread: threading.Thread | None = None
+    try:
+        holder_session.execute(
+            text("SELECT id FROM jobs WHERE id = :id FOR UPDATE"), {"id": job_id}
+        )
+        thread, outcome, elapsed = _call_with_deadline(heartbeat._renew_once, deadline=5.0)
+        assert not thread.is_alive(), (
+            f"the heartbeat's renewal was still blocked after {elapsed:.2f}s; "
+            "stop() would join this thread forever on a finished handler"
+        )
+    finally:
+        holder_session.rollback()
+        holder_session.close()
+        if thread is not None:
+            thread.join(timeout=10)
+        dispose(holder)
+
+    assert outcome.get("error") is None, f"the blocked renewal escaped: {outcome!r}"
+    assert outcome["value"] is True, (
+        "a blocked renewal stopped the heartbeat instead of costing one tick"
+    )
+
+    try:
+        recovered = heartbeat._renew_once()
+    finally:
+        dispose(factory)
+        logger.handlers.clear()
+
+    assert recovered is True, "the heartbeat did not recover once the lock was released"
+    assert heartbeat.lease_lost is False
+
+    records = [json.loads(line) for line in log_stream.getvalue().splitlines() if line.strip()]
+    errors = [record for record in records if record["level"] == "error"]
+    assert len(errors) == 1, f"expected exactly one logged renewal failure, got {errors}"
+    assert "error_class=OperationalError" in errors[0]["message"]
+    assert "lease renewal failed" in errors[0]["message"]
+    assert "exception" not in errors[0], "a timed-out renewal must not log a traceback"
+    assert "55P03" not in log_stream.getvalue(), "the driver's SQLSTATE reached the log"
+    assert "lock timeout" not in log_stream.getvalue().lower()
+    assert not events_named(log_stream, "job.lease_lost")
+
+    after = read_job(migrated_engine, job_id)
+    assert after.lease_owner == owner
+    assert after.lease_expires_at is not None
+    assert after.lease_expires_at > before.lease_expires_at, (
+        "the renewal after the lock was released did not extend the lease"
+    )

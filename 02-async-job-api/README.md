@@ -8,10 +8,11 @@
 4. **PR-2-03 (Recovery):** Done ([#17](https://github.com/rlancaster243/api-engineering-lab/pull/17)) — retries with backoff, lease-expiry recovery, crash falsification tests.
 5. **PR-2-04a (Effects):** Done ([#19](https://github.com/rlancaster243/api-engineering-lab/pull/19)) — transactional outbox plus reconciler, so a reclaimed job does not repeat an external side effect (falsification case 4).
 6. **PR-2-04b (Idempotency):** Done ([#20](https://github.com/rlancaster243/api-engineering-lab/pull/20)) — `Idempotency-Key` on `POST /v1/jobs` per ADR 0011, so a retried submission replays one job instead of creating a second.
-7. **PR-2-06 (Heartbeat):** Lease heartbeat plus a live-lease guard on the reconciler — a long handler keeps its lease, and the reconciler no longer applies an effect underneath a handler that is still alive.
+7. **PR-2-06 (Heartbeat):** In review ([#22](https://github.com/rlancaster243/api-engineering-lab/pull/22)) — lease heartbeat plus a live-lease guard on the reconciler. A long handler keeps its lease, and the reconciler no longer applies an effect underneath a handler that is still alive. Not merged yet; the six PRs above are.
 
-**Project 2 is complete.** Submission idempotency, the job store, the worker, retry
-and lease recovery, and the effect outbox are all in place. Completion record:
+**Project 2 is complete on `main`** through PR-2-04b. Submission idempotency, the job
+store, the worker, retry and lease recovery, and the effect outbox are all in place.
+Completion record:
 [`docs/evidence/project-2-completion.md`](../docs/evidence/project-2-completion.md).
 
 ## Run locally
@@ -221,13 +222,21 @@ attempts remain.
 
 Handlers no longer have to finish inside `LEASE_SECONDS`. The worker renews the
 lease every `LEASE_SECONDS / 3` while a handler is running, so a handler that takes
-longer than one lease keeps its job and is not reclaimed. Two things replace the old
-contract:
+longer than one lease keeps its job and is not reclaimed. Three things replace the
+old contract:
 
 - **A renewal has to land.** The margin is two renewals: at a third of the lease,
   one failed renewal leaves the next attempt with two thirds of the lease still to
   run. A handler that blocks the process — a GIL-holding C call, a pause long enough
   to stop the renewal thread — can still lose its lease.
+- **A renewal gives up rather than waiting.** `renew_lease` sets `SET LOCAL
+  lock_timeout = '500ms'` before its update. A concurrent reclaim holds the job row
+  under `SELECT ... FOR UPDATE`, and the heartbeat's thread is joined without a
+  timeout when the handler returns — the join cannot be bounded instead, because a
+  renewal committing after the completion would leave a finished row holding a live
+  lease. So the wait is bounded at the statement: a blocked renewal fails with
+  SQLSTATE `55P03` after about half a second, is logged as `error_class=
+  OperationalError`, and costs one tick rather than the heartbeat or the worker.
 - **A lost lease is not survivable.** If the job is taken over mid-handler, the
   renewal matches zero rows, the worker logs `job.lease_lost` **once** and stops
   renewing, and the handler is left to finish. It is not interrupted: it may be
@@ -259,6 +268,15 @@ line, not something to retry.
   and records it, but the handler runs to completion because nothing safe can abort
   a call already in flight. Its work is discarded, not rolled back: an external
   effect it applied before its completion was refused stays applied.
+- **A hung handler now holds its job forever.** The heartbeat renews a running
+  handler's lease indefinitely, so a handler that never returns is never reclaimed,
+  never swept, and that worker is stuck on it permanently. `LEASE_SECONDS` no longer
+  bounds handler runtime at all — it bounds only how long a worker may go silent
+  without renewing. The heartbeat therefore trades "long handlers get reclaimed" for
+  "hung handlers are never recovered", and nothing in this slice bounds handler
+  duration. A max-handler-duration setting, or a cap on the number of renewals after
+  which the worker stops renewing and lets the lease lapse, would be the honest fix;
+  neither is implemented.
 - **One effect per `(job_id, effect_key)`.** A genuinely repeatable effect — a
   per-attempt notification — needs an `effect_key` that includes the attempt, which
   this slice does not model.

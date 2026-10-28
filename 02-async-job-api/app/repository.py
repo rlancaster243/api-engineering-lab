@@ -68,6 +68,28 @@ COMPLETE_SQL = text(
     """
 ).bindparams(bindparam("result", type_=JSONB(none_as_null=True)))
 
+# How long the renewal statement may wait for a row lock.
+#
+# ``Worker._process`` stops the heartbeat in a ``finally`` before any completion
+# write, and ``_LeaseHeartbeat.stop`` joins that thread without a timeout: a renewal
+# still in flight could otherwise commit after the completion and leave a finished
+# row holding a live lease. An unbounded join is only safe if the statement it waits
+# for is bounded, and by default it is not — a concurrent reclaim holds this row
+# under ``SELECT ... FOR UPDATE`` for the length of its own transaction, so a plain
+# renewal would block indefinitely and the join would hang the whole worker on a
+# handler that has already returned. The wait is therefore bounded here, at the
+# statement, rather than at the join.
+#
+# Exceeding it fails the renewal with SQLSTATE ``55P03`` (``lock_not_available``),
+# which surfaces as ``OperationalError`` and is handled exactly like any other
+# failed renewal: logged by class, counted as one missed renewal, and retried on the
+# next tick while the lease still has two thirds of its life left.
+RENEWAL_LOCK_TIMEOUT_MS = 500
+
+# ``SET LOCAL`` takes a literal, not a bind parameter, so the value is interpolated
+# from the integer constant above — never from anything a caller supplies.
+SET_RENEWAL_LOCK_TIMEOUT_SQL = text(f"SET LOCAL lock_timeout = '{RENEWAL_LOCK_TIMEOUT_MS}ms'")
+
 # The heartbeat. Owner-scoped for the same reason as COMPLETE_SQL and FAIL_SQL: a
 # worker that was taken over must not be able to revive its claim by renewing, so a
 # stale renewal matches zero rows instead of pushing a new owner's lease forward.
@@ -314,7 +336,15 @@ def renew_lease(session: Session, *, job_id: uuid.UUID, worker_id: str, lease_se
     renewing. Completion and failure are refused from here on by their own
     ``lease_owner`` guards, which ``_finish`` and ``_fail`` already report as
     ``job.lease_lost``.
+
+    ``SET LOCAL lock_timeout`` bounds how long this statement may wait for the job
+    row: a concurrent reclaim holds it under ``FOR UPDATE``, and the heartbeat's join
+    is unbounded, so an unbounded wait here would hang the worker after its handler
+    returned. The timeout raises rather than returning ``False`` — a lock is not a
+    lost lease — so it propagates to the caller's error path. ``SET LOCAL`` scopes it
+    to this transaction, so no other statement on the connection inherits it.
     """
+    session.execute(SET_RENEWAL_LOCK_TIMEOUT_SQL)
     row = session.execute(
         RENEW_LEASE_SQL,
         {"job_id": job_id, "worker_id": worker_id, "lease_seconds": lease_seconds},
