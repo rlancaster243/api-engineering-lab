@@ -14,9 +14,18 @@ so a crash is charged against the job's budget.
 The reconcile step closes falsification case 4 from the other side. A handler claims
 its side effect in ``job_effects`` before performing it, so a reclaimed job re-runs
 the handler but skips the effect. If the process died between the claim and the
-confirmation, the effect stays ``INTENT``; once it is older than
-``EFFECT_RECONCILE_GRACE_SECONDS`` — long enough that its handler cannot still be in
-flight — a worker applies and confirms it.
+confirmation, the effect stays ``INTENT``. Age alone cannot identify that row — a
+handler that renews its lease outlives any grace period — so ``EFFECT_RECONCILE_GRACE_SECONDS``
+is only a candidate filter and the decision is taken under the effect row's lock:
+an ``INTENT`` row whose job still holds a live lease is skipped, because its handler
+may still be about to apply it. Only an ``INTENT`` row on a job with no live lease
+(such as a terminal or expired one) is applied and confirmed.
+
+A handler also renews its own lease while it runs, every ``LEASE_SECONDS / 3``, so
+a long handler is not reclaimed mid-run. The renewal is owner-scoped: if the job has
+been taken over, renewal matches zero rows, the worker logs ``job.lease_lost`` once
+and stops renewing, and the handler is allowed to finish — its completion is then
+refused by the same ``lease_owner`` guard that protects every other write.
 
 A single cycle cannot take the process down: a reconcile that raises, a sweep that
 raises, a claim that raises, a handler that raises or returns a non-object, and a
@@ -38,6 +47,7 @@ import socket
 import sys
 import threading
 import uuid
+from collections.abc import Callable
 
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
@@ -63,9 +73,152 @@ TERMINAL_FAILED = "FAILED"
 #: Mirrors the SWEEP_SQL message, so the logged length and the stored row agree.
 LEASE_EXHAUSTED_MESSAGE = "lease expired after {attempt} attempt(s); no attempts remaining"
 
+#: A running handler renews every ``LEASE_SECONDS / LEASE_RENEWAL_DIVISOR``. Three
+#: renewals per lease means two consecutive renewals can fail before the lease is at
+#: risk, and a renewal that lands late still lands inside the current lease.
+LEASE_RENEWAL_DIVISOR = 3
+
+#: Thread-name prefix for a heartbeat, so a test can find one without reaching into
+#: the worker's internals.
+HEARTBEAT_THREAD_NAME_PREFIX = "job-lease-heartbeat"
+
 
 def make_worker_id() -> str:
     return f"{socket.gethostname()}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+
+
+def renewal_interval_seconds(lease_seconds: int) -> float:
+    """How long the heartbeat waits between renewals: one third of the lease.
+
+    Pure, and exported, so the ratio can be asserted without waiting for a thread to
+    tick. Not a setting: it is derived from ``LEASE_SECONDS`` so a deployment cannot
+    configure a renewal cadence that outlives the lease it is renewing. The
+    configuration validates ``LEASE_SECONDS`` as an integer greater than zero, so a
+    zero or negative interval is not reachable and needs no clamp.
+    """
+    return lease_seconds / LEASE_RENEWAL_DIVISOR
+
+
+class _LeaseHeartbeat:
+    """Renew one job's lease from a background thread, only while its handler runs.
+
+    ``start`` is called immediately before the handler and ``stop`` in a ``finally``,
+    so the thread's whole life sits inside the handler call. That matters twice: a
+    heartbeat that started before the claim could renew nothing, and one that
+    outlived the handler would keep pushing the lease forward on a row the worker
+    has already tried to finish.
+
+    The wait is an ``Event.wait`` on the interval, not a sleep, so ``stop`` wakes the
+    loop at once instead of after the current interval. Renewing at a third of the
+    lease gives two more attempts before expiry if one renewal fails.
+
+    A renewal that answers zero rows means the lease is gone: log ``job.lease_lost``
+    once and stop. It is *not* raised into the handler, and the handler is not
+    interrupted — it may be mid-way through an external call, and aborting it would
+    be worse than letting it finish. Its completion and failure writes are already
+    ``lease_owner``-scoped, so they cannot overwrite the new owner's row.
+
+    A renewal that raises is logged by class and the loop carries on: a transient
+    database error must cost one renewal, not the heartbeat or the worker. That
+    includes the statement's own ``lock_timeout`` — a renewal blocked behind a
+    concurrent reclaim gives up after ``RENEWAL_LOCK_TIMEOUT_MS`` instead of waiting,
+    which is what keeps ``stop``'s unbounded join from hanging the worker.
+
+    The cost is that ``LEASE_SECONDS`` no longer bounds handler runtime at all: a
+    handler that never returns is never reclaimed, because its heartbeat keeps the
+    lease alive forever. Nothing here bounds how long a handler may run; see the
+    README's known limitations.
+    """
+
+    def __init__(
+        self,
+        session_factory: sessionmaker[Session],
+        *,
+        job_id: uuid.UUID,
+        attempt: int,
+        worker_id: str,
+        lease_seconds: int,
+        logger: logging.Logger,
+        on_write_error: Callable[[str, Exception], None],
+    ) -> None:
+        self._session_factory = session_factory
+        self._job_id = job_id
+        self._attempt = attempt
+        self._worker_id = worker_id
+        self._lease_seconds = lease_seconds
+        self._logger = logger
+        self._on_write_error = on_write_error
+        self.interval_seconds = renewal_interval_seconds(lease_seconds)
+        self.lease_lost = False
+        self._stop = threading.Event()
+        self._started = False
+        self._thread = threading.Thread(
+            target=self._run,
+            name=f"{HEARTBEAT_THREAD_NAME_PREFIX}-{job_id}",
+            daemon=True,
+        )
+
+    def start(self) -> None:
+        # ``_started`` is set only once the thread exists: ``stop`` joins, and joining
+        # a thread that was never started raises. If ``start`` itself raises — the
+        # process is out of threads — it propagates out of ``_process`` before the
+        # handler runs, so the cycle fails loudly and the job is recovered by lease
+        # expiry rather than running unprotected against a silent reclaim.
+        self._thread.start()
+        self._started = True
+
+    def stop(self) -> None:
+        """Signal the loop and join it. Idempotent, and safe before ``start``.
+
+        The join is unbounded on purpose: returning while a renewal is still in
+        flight would let it commit after the completion write and leave a finished
+        row with a live-looking lease.
+        """
+        self._stop.set()
+        if self._started:
+            self._thread.join()
+
+    def _run(self) -> None:
+        while not self._stop.wait(self.interval_seconds):
+            if not self._renew_once():
+                return
+
+    def _renew_once(self) -> bool:
+        """One renewal. ``False`` means stop renewing: the lease is no longer ours."""
+        try:
+            with self._session_factory() as session:
+                renewed = repository.renew_lease(
+                    session,
+                    job_id=self._job_id,
+                    worker_id=self._worker_id,
+                    lease_seconds=self._lease_seconds,
+                )
+                if renewed:
+                    session.commit()
+                else:
+                    # Nothing was written, so this is not a commit. The transaction
+                    # still has to be ended here — ``renew_lease`` opens one with
+                    # ``SET LOCAL lock_timeout`` before its statement — and a
+                    # rollback is the honest end for a renewal that changed nothing.
+                    # It also discards the ``SET LOCAL``, so the timeout cannot
+                    # outlive the renewal on this connection.
+                    session.rollback()
+        except Exception as error:  # one failed renewal must not kill the thread
+            self._on_write_error("lease renewal", error)
+            return True
+        if renewed:
+            return True
+        if not self.lease_lost:
+            self.lease_lost = True
+            log_event(
+                self._logger,
+                "job.lease_lost",
+                _level=logging.WARNING,
+                worker_id=self._worker_id,
+                job_id=str(self._job_id),
+                attempt=self._attempt,
+            )
+        return False
 
 
 class Worker:
@@ -126,18 +279,27 @@ class Worker:
         return True
 
     def _reconcile_effects(self) -> None:
-        """Apply stranded ``INTENT`` effects older than the grace period.
+        """Apply stranded ``INTENT`` effects that no live handler can still own.
 
         A handler that dies between claiming an effect and confirming it leaves the
         row ``INTENT`` forever; without this step the effect is never applied and the
-        outbox silently loses work. The grace period keeps the reconciler off a live
-        handler's row: a young ``INTENT`` may still be applied by the worker that
-        holds it, and applying it here would duplicate.
+        outbox silently loses work.
+
+        Two different questions, answered in two places on purpose. What is
+        *suspect* is an unlocked read: an ``INTENT`` row older than
+        ``EFFECT_RECONCILE_GRACE_SECONDS`` is a candidate. What is *abandoned* is
+        decided under the effect row's lock by ``repository.lock_pending_effect``,
+        which re-reads the effect status and the job's lease. Age cannot answer the
+        second question: a handler that renews its lease can hold an ``INTENT`` row
+        open indefinitely, so the lease — not the age — is the evidence that nobody
+        is going to apply it. The read is the candidate list; the lock is the
+        decision.
 
         The row is locked for the whole apply-and-confirm, in one transaction. Every
         worker reconciles on every cycle, so two of them will race for the same
         stranded row; the lock is what stops both from applying it. The loser blocks,
-        re-reads a committed ``APPLIED`` row and moves on.
+        re-reads a committed ``APPLIED`` row and moves on. The lock is on the effect
+        row only, so a concurrent heartbeat is not blocked behind an apply.
 
         An apply failure rolls back, leaving the row ``INTENT`` for a later cycle, and
         must not stop the worker: it logs the class and carries on to the claim.
@@ -160,7 +322,8 @@ class Worker:
                         session, job_id=job_id, effect_key=effect_key
                     )
                     if locked is None:
-                        # Confirmed by another reconciler, or no longer old enough.
+                        # Another reconciler confirmed it, or the job still holds a
+                        # live lease and its handler owns the effect.
                         continue
                     age_seconds, detail = locked
                     self._apply_effect(job_id, effect_key, detail)
@@ -241,10 +404,20 @@ class Worker:
             job_id=job.id,
             apply_effect=self._apply_effect,
         )
+        failure: handlers.FailureDetail | None = None
+        result: object = None
+        heartbeat = self._start_heartbeat(job)
         try:
             result = handler(job.payload, context)
         except Exception as error:  # a handler failure must not kill the loop
-            self._fail(job, handlers.describe_failure(error))
+            failure = handlers.describe_failure(error)
+        finally:
+            # Before every write below: a renewal that landed after the completion
+            # would leave a finished row holding a live lease.
+            heartbeat.stop()
+
+        if failure is not None:
+            self._fail(job, failure)
             return
         if not isinstance(result, dict):
             self._fail(job, handlers.invalid_result_failure(result))
@@ -256,6 +429,30 @@ class Worker:
             failure=None,
             event="job.succeeded",
         )
+
+    def _start_heartbeat(self, job: Job) -> _LeaseHeartbeat:
+        """Start renewing this job's lease. Always paired with ``heartbeat.stop()``.
+
+        ``_process`` stops it in a ``finally`` around the handler call, which covers
+        every path that follows — success, failure, a non-dict result and a handler
+        that raises — and runs before any completion write, so a renewal cannot land
+        after the job has been finished.
+        """
+
+        def _write_error(action: str, error: Exception) -> None:
+            self._log_write_error(action, job, error)
+
+        heartbeat = _LeaseHeartbeat(
+            self._session_factory,
+            job_id=job.id,
+            attempt=job.attempt,
+            worker_id=self.worker_id,
+            lease_seconds=self.lease_seconds,
+            logger=self.logger,
+            on_write_error=_write_error,
+        )
+        heartbeat.start()
+        return heartbeat
 
     def _fail(self, job: Job, failure: handlers.FailureDetail) -> None:
         """Record a failed attempt: requeue with backoff, or fail terminally.

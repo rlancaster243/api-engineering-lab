@@ -1,7 +1,7 @@
 # Project 2 completion record
 
 **Repository:** `02-async-job-api/` — async job API
-**Status:** Complete on `main` at merge `f016f30`. All five syllabus §8 falsification cases are covered by tests that run in the default suite.
+**Status:** Complete on `main`; PR-2-06 ([#22](https://github.com/rlancaster243/api-engineering-lab/pull/22)) adds the lease heartbeat and the reconciler's live-lease guard and is in review, not yet merged. All five syllabus §8 falsification cases are covered by tests that run in the default suite.
 
 ## Merged pull requests
 
@@ -14,6 +14,10 @@
 | [#18](https://github.com/rlancaster243/api-engineering-lab/pull/18) | CI fix: run checks on every pull request, not only those based on `main` (the stacked PRs were otherwise unchecked) |
 | [#19](https://github.com/rlancaster243/api-engineering-lab/pull/19) | Transactional outbox plus reconciler, so a reclaimed job does not repeat an external side effect (falsification case 4) |
 | [#20](https://github.com/rlancaster243/api-engineering-lab/pull/20) | `Idempotency-Key` on `POST /v1/jobs`: replay, `409` conflict, 255-character cap (ADR 0011) |
+
+Not merged: [#22](https://github.com/rlancaster243/api-engineering-lab/pull/22) adds the
+lease heartbeat (owner-scoped `RENEW_LEASE_SQL`) and the reconciler's live-lease guard.
+The tests and limitations below include it; the `main` merge commit does not.
 
 ## ADRs accepted
 
@@ -51,7 +55,9 @@ its handler again; that is case 4's problem, and the two mechanisms are independ
 
 ## Verification record
 
-Commands, run from a clean `main` at `f016f30`:
+Commands, run on the PR-2-06 branch
+[`cursor/project-2-pr06-heartbeat-1856`](https://github.com/rlancaster243/api-engineering-lab/pull/22),
+which sits on `main`'s closing-docs merge `de6ffe0`:
 
 ```bash
 cd 02-async-job-api
@@ -65,8 +71,8 @@ Actual results:
 
 ```text
 All checks passed!
-34 files already formatted
-193 passed, 1 warning in 5.30s
+35 files already formatted
+209 passed, 1 warning in 14.62s
 ```
 
 `REQUIRE_DATABASE=1` makes a skipped database test a failure, so **0 skipped** is
@@ -74,8 +80,10 @@ enforced by the run rather than observed by eye. The single warning is a
 `StarletteDeprecationWarning` about `httpx` from a FastAPI test-client import; it is
 not from this project's code.
 
+The count moves with each PR: 193 on `main` at `f016f30`, 209 on the PR-2-06 branch.
 Migrations run forward from an empty database through `0001` → `0006_job_idempotency`
-(`test_migration_upgrade_from_clean_database`, `test_migration_round_trip`).
+(`test_migration_upgrade_from_clean_database`, `test_migration_round_trip`); PR-2-06
+adds no migration.
 
 ## Known limitations
 
@@ -83,11 +91,26 @@ Migrations run forward from an empty database through `0001` → `0006_job_idemp
   detectable and skippable, and the reconciler covers a crash before confirmation, but
   a third-party call must still be idempotent — normally by passing `effect_key` as
   the vendor's idempotency key.
-- **A handler stalling past `EFFECT_RECONCILE_GRACE_SECONDS` can be double-applied.**
-  The reconciler treats an old `INTENT` as stranded; a handler that is merely slow
-  then applies the effect a second time alongside the reconciler.
-- **No heartbeat.** A handler that outlives `LEASE_SECONDS` can be reclaimed and run
-  twice, concurrently with the original.
+- **A handler that loses its lease and then applies can still be double-applied.** The
+  reconciler's live-lease check protects a handler that still *holds* its lease: a
+  live lease means its `INTENT` row is skipped. The gap is a handler that loses its
+  lease and *then* applies — a zombie. Its job no longer holds a lease, so the
+  reconciler is entitled to act on the row, and both can apply. The heartbeat makes
+  this rarer, because losing a lease now requires a takeover rather than merely
+  outliving `LEASE_SECONDS`, but it does not make it impossible. Vendor calls must
+  stay idempotent.
+- **A hung handler now holds its job forever.** The heartbeat renews a running
+  handler's lease indefinitely, so a handler that never returns is never reclaimed,
+  never swept, and that worker is stuck on it permanently. `LEASE_SECONDS` no longer
+  bounds handler runtime at all — it bounds only how long a worker may go silent
+  without renewing. The heartbeat therefore trades "long handlers get reclaimed" for
+  "hung handlers are never recovered". Nothing in this slice bounds handler duration;
+  a max-handler-duration setting or a cap on the number of renewals would be the
+  honest fix, and neither is implemented.
+- **A handler cannot be stopped once it loses its lease.** Renewal detects the loss
+  and records it, but the handler runs to completion because nothing safe can abort a
+  call already in flight. Its work is discarded, not rolled back: an effect it
+  already applied stays applied, even though its completion write was refused.
 - **Recovery and reconciliation are worker-driven.** The sweep, the reconciler and the
   claim all run inside each worker cycle. If no worker runs, nothing is recovered,
   terminated or reconciled.
