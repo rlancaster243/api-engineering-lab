@@ -192,13 +192,13 @@ Client -> FastAPI -> PostgreSQL job record
 
 ### Required mechanics
 
-- [ ] Document a state machine: `PENDING`, `RUNNING`, `SUCCEEDED`, `FAILED`, with retryable attempts modeled explicitly.
-- [ ] Make submission durable before reporting acceptance.
-- [ ] Implement safe concurrent claims using database locking or another justified transaction protocol.
-- [ ] Define leases, expiration, retries, attempt limits, and terminal failure.
-- [ ] Define idempotency-key scope, retention, and conflict behavior.
-- [ ] Provide structured logs and job/attempt correlation.
-- [ ] Simulate crashes and restart recovery.
+- [x] Document a state machine: `PENDING`, `RUNNING`, `SUCCEEDED`, `FAILED`, with retryable attempts modeled explicitly. *(Corrected to the implemented machine, with retry, reclaim and sweep edges and the owning SQL statement per edge: [project-2 plan §State machine](plans/project-2-plan.md#state-machine).)*
+- [x] Make submission durable before reporting acceptance. *(`test_durability_before_acceptance` in `02-async-job-api/tests/test_jobs_api.py` reads the row back over an independent connection after the `202`; PR #15.)*
+- [x] Implement safe concurrent claims using database locking or another justified transaction protocol. *(`test_two_concurrent_claimers_exactly_one_wins`, 20 trials of two racing connections against `FOR UPDATE SKIP LOCKED`; PR #16, ADR 0010.)*
+- [x] Define leases, expiration, retries, attempt limits, and terminal failure. *(PR #16 + #17; `test_failure_at_last_attempt_is_terminal` and `test_crash_on_last_attempt_is_failed_not_left_running` in `tests/test_recovery.py`.)*
+- [x] Define idempotency-key scope, retention, and conflict behavior. *(`tests/test_idempotency.py`; PR #20, [ADR 0011](decisions/0011-job-idempotency.md).)*
+- [x] Provide structured logs and job/attempt correlation. *(`test_every_event_carries_worker_id` in `tests/test_worker.py`; one JSON object per event with `job_id` and `attempt`, PR #16/#17.)*
+- [x] Simulate crashes and restart recovery. *(`test_crashed_worker_job_is_reclaimed_by_another_worker` in `tests/test_recovery.py` — real worker subprocess killed with `SIGKILL` mid-handler, then reclaimed; PR #17.)*
 
 ### Falsification cases
 
@@ -209,6 +209,8 @@ Client -> FastAPI -> PostgreSQL job record
 5. Database is unavailable: API cannot falsely assert durable acceptance or completion.
 
 **Gate:** Demonstrated concurrent-claim, duplicate-request, and crash-recovery tests. Avoid claiming exactly-once delivery without evidence.
+
+All three now exist: concurrent claim is `test_two_concurrent_claimers_exactly_one_wins`, duplicate request is the eight-thread one-key race `test_concurrent_submissions_of_one_key_create_one_job` in `tests/test_idempotency.py`, and crash recovery is `test_crashed_worker_job_is_reclaimed_by_another_worker` (real `SIGKILL`). Exactly-once delivery is still **not** claimed: side effects are at-least-once, and the outbox only makes a duplicate detectable and skippable. See [the completion record](evidence/project-2-completion.md#known-limitations).
 
 ## 9. Project 3 — existing API hardening (Weeks 7–8)
 
@@ -285,9 +287,9 @@ For every milestone save the PR/commit, commands or CI results, tests that prove
 - [x] Demonstrate a rolled-back failed transaction. *(`test_persistence` / item tests.)*
 - [x] Enforce authentication and authorization. *(PR #8, ADR 0005.)*
 - [x] Prove two-user isolation. *(`test_isolation.py`.)*
-- [ ] Implement and test durable idempotent job submission. *(Project 2.)*
-- [ ] Demonstrate safe concurrent worker claims. *(Project 2.)*
-- [ ] Recover a job after worker crash. *(Project 2.)*
+- [x] Implement and test durable idempotent job submission. *(`tests/test_idempotency.py` in `02-async-job-api/`, including the eight-thread one-key race; PR #20, [ADR 0011](decisions/0011-job-idempotency.md).)*
+- [x] Demonstrate safe concurrent worker claims. *(`test_two_concurrent_claimers_exactly_one_wins` in `tests/test_claims.py`; PR #16.)*
+- [x] Recover a job after worker crash. *(`test_crashed_worker_job_is_reclaimed_by_another_worker` in `tests/test_recovery.py`, which kills a real worker subprocess with `SIGKILL`; PR #17.)*
 - [x] Debug an unfamiliar failing test. *(Gate E evidence, PR-08.)*
 - [x] Run project from clean checkout and defend a tradeoff in code review. *(README + CI; ADRs.)*
 
@@ -296,7 +298,11 @@ For every milestone save the PR/commit, commands or CI results, tests that prove
 ## 15. Immediate backlog — next implementation action
 
 - [x] **Project 2 PR-2-00:** foundation on `02-async-job-api/` ([#11](https://github.com/rlancaster243/api-engineering-lab/pull/11)).
-- [ ] **Project 2 PR-2-01:** job schema, `POST /v1/jobs` → 202, `GET /v1/jobs/{id}`.
+- [x] **Project 2 PR-2-01:** job schema, `POST /v1/jobs` → 202, `GET /v1/jobs/{id}` ([#15](https://github.com/rlancaster243/api-engineering-lab/pull/15), `dd365f2`).
+- [x] **Project 2 PR-2-02:** claim/lease protocol and the separate worker process ([#16](https://github.com/rlancaster243/api-engineering-lab/pull/16)).
+- [x] **Project 2 PR-2-03:** retries with backoff, lease-expiry sweep and reclaim, real-crash recovery ([#17](https://github.com/rlancaster243/api-engineering-lab/pull/17)).
+- [x] **Project 2 PR-2-04a:** transactional outbox and reconciler for falsification case 4 ([#19](https://github.com/rlancaster243/api-engineering-lab/pull/19)).
+- [x] **Project 2 PR-2-04b:** `Idempotency-Key` submission semantics ([#20](https://github.com/rlancaster243/api-engineering-lab/pull/20)).
 - [x] Read current `README.md`, project directories, and CI configuration.
 - [x] Align the README's phase ownership/auth wording with this syllabus.
 - [x] Choose a small first feature branch, e.g. `feature/rest-api-foundation`.
@@ -305,5 +311,7 @@ For every milestone save the PR/commit, commands or CI results, tests that prove
 - [x] Verify GitHub Actions results and fix failures.
 - [x] Open a PR with test evidence.
 - [x] Merge after required checks pass.
+
+**Next action (Project 3 blocker, not a code task):** settle *exact Project 3 source code — must be independently owned or authorized* (§13, still OPEN). `03-api-hardening/` is a scaffold with no target service, and §9 forbids copying proprietary third-party implementations, data, credentials or internal documentation. Pick and record the source before writing any Project 3 code: either a service written for this portfolio, or a sanitized reproduction with written authorization on file. Until that decision is made and recorded in §13, the honest next action is the decision itself.
 
 **Exit condition:** Three verifiable engineering case studies, at least one substantial independently implemented API, reproducible tests and environment setup, and a defensible explanation of behavior, security, failure modes, and recovery.
