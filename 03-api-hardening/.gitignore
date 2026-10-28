@@ -1,0 +1,5 @@
+# Runtime database written by the default DATABASE_PATH
+var/
+*.sqlite3
+*.sqlite3-journal
+*.sqlite3-wal
