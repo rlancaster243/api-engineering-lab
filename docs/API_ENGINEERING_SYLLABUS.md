@@ -270,7 +270,7 @@ Candidate cases: misleading `200` on failure, missing access check, partial-stat
 | ADR-003: PostgreSQL persistence | Accepted | [`0004-persistence.md`](decisions/0004-persistence.md) |
 | ADR-004: authentication mechanism | Accepted | [`0005-external-identity.md`](decisions/0005-external-identity.md) (OIDC Bearer access tokens) |
 | ADR-005: PostgreSQL-backed job store | Accepted | [`0010-postgres-job-store.md`](decisions/0010-postgres-job-store.md) (Project 2) |
-| ADR-006: idempotency/recovery guarantee | Proposed | [`0011-job-idempotency.md`](decisions/0011-job-idempotency.md) (PR-2-04) |
+| ADR-006: idempotency/recovery guarantee | Accepted | [`0011-job-idempotency.md`](decisions/0011-job-idempotency.md) (PR-2-04b) |
 | README roadmap alignment | Resolved | Root README & `01-rest-api/README.md` aligned with Project 1A/1B/3 |
 | Exact Project 3 source code | OPEN | Must be independently owned or authorized |
 

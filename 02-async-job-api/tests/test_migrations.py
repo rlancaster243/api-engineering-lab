@@ -51,7 +51,7 @@ def test_migration_round_trip(migrated_database_url: str) -> None:
 
         with engine.connect() as conn:
             version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-            assert version == "0005_job_effects"
+            assert version == "0006_job_idempotency"
             result = conn.execute(
                 text(
                     "SELECT table_name FROM information_schema.tables "
@@ -71,7 +71,7 @@ def test_migration_round_trip(migrated_database_url: str) -> None:
 def test_migration_upgrade_from_clean_database(migrated_engine: Engine) -> None:
     with migrated_engine.connect() as connection:
         version = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-    assert version == "0005_job_effects"
+    assert version == "0006_job_idempotency"
 
 
 def test_jobs_table_exists(migrated_engine: Engine) -> None:
@@ -210,7 +210,7 @@ def test_lease_columns_downgrade_cleanly(migrated_database_url: str) -> None:
 
     with create_engine(sqlalchemy_url(migrated_database_url)).connect() as conn:
         version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-    assert version == "0005_job_effects"
+    assert version == "0006_job_idempotency"
 
 
 def test_0004_adds_next_attempt_at(migrated_engine: Engine) -> None:
@@ -319,3 +319,87 @@ def test_0005_creates_job_effects_with_partial_index(migrated_engine: Engine) ->
     assert key is not None and "(job_id, effect_key)" in key, (
         "the outbox key must be (job_id, effect_key)"
     )
+
+
+def test_0006_adds_idempotency_columns(migrated_engine: Engine) -> None:
+    """Both idempotency columns exist and are nullable — unkeyed jobs stay legal."""
+    with migrated_engine.connect() as connection:
+        columns = dict(
+            connection.execute(
+                text(
+                    "SELECT column_name, is_nullable FROM information_schema.columns "
+                    "WHERE table_schema = 'public' AND table_name = 'jobs' "
+                    "AND column_name IN ('idempotency_key', 'request_fingerprint')"
+                )
+            ).all()
+        )
+    for column in ("idempotency_key", "request_fingerprint"):
+        assert column in columns, f"0006_job_idempotency did not add {column}"
+        assert columns[column] == "YES", f"{column} must be nullable"
+
+
+def test_0006_adds_a_partial_unique_idempotency_index(migrated_engine: Engine) -> None:
+    """``ux_jobs_idempotency_key`` must be unique *and* partial.
+
+    A non-partial unique index over a nullable column would make every unkeyed job
+    collide on NULL, so one of the two properties alone is not the design.
+    """
+    with migrated_engine.connect() as connection:
+        definition = connection.execute(
+            text("SELECT indexdef FROM pg_indexes WHERE indexname = 'ux_jobs_idempotency_key'")
+        ).scalar_one_or_none()
+    assert definition is not None, "ux_jobs_idempotency_key is missing"
+    assert "UNIQUE" in definition.upper(), "the key index must be unique"
+    assert "idempotency_key" in definition
+    assert "WHERE" in definition.upper() and "IS NOT NULL" in definition.upper(), (
+        "the key index must be partial on rows that carry a key"
+    )
+
+
+def test_0006_adds_the_idempotency_pair_constraint(migrated_engine: Engine) -> None:
+    """Key and fingerprint must never exist without each other."""
+    with migrated_engine.connect() as connection:
+        definition = connection.execute(
+            text(
+                "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+                "WHERE conname = 'ck_jobs_idempotency_pair'"
+            )
+        ).scalar_one_or_none()
+    assert definition is not None, "ck_jobs_idempotency_pair is missing"
+    assert "idempotency_key" in definition
+    assert "request_fingerprint" in definition
+
+
+def test_0006_downgrade_removes_the_idempotency_schema(migrated_database_url: str) -> None:
+    """Exercises the DOWNGRADE path in isolation: columns, index and constraint all go."""
+    config = Config(str(_PROJECT_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(_PROJECT_ROOT / "alembic"))
+    config.set_main_option("sqlalchemy.url", sqlalchemy_url(migrated_database_url))
+
+    engine = create_engine(sqlalchemy_url(migrated_database_url))
+    try:
+        command.downgrade(config, "0005_job_effects")
+        with engine.connect() as conn:
+            remaining = conn.execute(
+                text(
+                    "SELECT count(*) FROM information_schema.columns "
+                    "WHERE table_schema = 'public' AND table_name = 'jobs' "
+                    "AND column_name IN ('idempotency_key', 'request_fingerprint')"
+                )
+            ).scalar_one()
+            index = conn.execute(
+                text("SELECT 1 FROM pg_indexes WHERE indexname = 'ux_jobs_idempotency_key'")
+            ).scalar_one_or_none()
+            constraint = conn.execute(
+                text("SELECT 1 FROM pg_constraint WHERE conname = 'ck_jobs_idempotency_pair'")
+            ).scalar_one_or_none()
+        assert remaining == 0, "downgrade left idempotency columns behind"
+        assert index is None, "downgrade left the key index behind"
+        assert constraint is None, "downgrade left the pair constraint behind"
+    finally:
+        command.upgrade(config, "head")
+        engine.dispose()
+
+    with create_engine(sqlalchemy_url(migrated_database_url)).connect() as conn:
+        version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+    assert version == "0006_job_idempotency"
