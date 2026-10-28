@@ -31,7 +31,8 @@ stateDiagram-v2
     RUNNING --> SUCCEEDED: handler returns a dict
     RUNNING --> PENDING: failure with attempts left
     RUNNING --> FAILED: failure with no attempts left
-    RUNNING --> RUNNING: lease expired, attempts left
+    RUNNING --> RUNNING: lease expired, attempts left (reclaim)
+    RUNNING --> RUNNING: handler alive, lease renewed (heartbeat)
     RUNNING --> FAILED: lease expired, no attempts left
     RUNNING --> FAILED: result cannot be stored
     SUCCEEDED --> [*]
@@ -48,7 +49,7 @@ row out of here", not a transition.
 | `RUNNING` → `SUCCEEDED` | `COMPLETE_SQL` | Handler returned a `dict`. `complete_job` stores `result`, sets `finished_at`, clears the lease. |
 | `RUNNING` → `PENDING` | `FAIL_SQL` | Handler raised, returned a non-dict, or had no registered type, and `attempt < max_attempts`: `last_error` set, `finished_at` NULL, `next_attempt_at = now() + backoff`, lease cleared. |
 | `RUNNING` → `FAILED` | `FAIL_SQL` | The same event with `attempt == max_attempts`. One `CASE` expression picks `PENDING` or `FAILED`, which is why the two edges share a statement: a zero-row result must mean "lease lost", not "budget exhausted". |
-| `RUNNING` → `RUNNING` | `RECLAIM_SQL` | Lease expired and `attempt < max_attempts`: another worker takes the row, `attempt + 1`, new `lease_owner`, new `lease_expires_at`, refreshed `claimed_at`. |
+| `RUNNING` → `RUNNING` | `RECLAIM_SQL` and `RENEW_LEASE_SQL` | Two statements serve this self-edge and they mean opposite things. `RECLAIM_SQL` is an **ownership transfer**: the lease expired and `attempt < max_attempts`, so another worker takes the row — `attempt + 1`, new `lease_owner`, new `lease_expires_at`, refreshed `claimed_at`. `RENEW_LEASE_SQL` is the **heartbeat**: the same owner pushes `lease_expires_at` forward, with `attempt` unchanged, `lease_owner` unchanged and no other column touched. It is a self-edge only because the row's state before and after is `RUNNING`; nothing about ownership or progress changes. Its `lease_owner = :worker_id` guard is what keeps the two apart — a renewal can never become a takeover, and a takeover can never be mistaken for one. |
 | `RUNNING` → `FAILED` | `SWEEP_SQL` | Lease expired and `attempt >= max_attempts`: the sweep terminally fails it with `lease expired after N attempt(s); no attempts remaining`. Without this the claim's `attempt < max_attempts` guard would leave the row `RUNNING` forever. |
 | `RUNNING` → `FAILED` | `COMPLETE_SQL` | The result cannot be stored (for example a non-JSON-serialisable value): `_finish` catches the completion error and issues the same statement again with `status = 'FAILED'`. Pinned by `test_non_serialisable_result_fails_job_instead_of_stranding_it`. |
 
@@ -63,9 +64,13 @@ expired `RUNNING` job is never starved behind a busy `PENDING` queue.
   requires `RUNNING` with an expired lease. There is no statement that writes from a
   terminal state. `ck_jobs_terminal_has_finished` additionally requires `finished_at`
   on a terminal row.
-- **Completion only by the current `lease_owner`.** `COMPLETE_SQL` and `FAIL_SQL` both
-  bind `lease_owner = :worker_id`. A worker whose lease was taken over matches zero
-  rows and logs `job.lease_lost` instead of retrying.
+- **Completion only by the current `lease_owner`.** `COMPLETE_SQL`, `FAIL_SQL` and
+  `RENEW_LEASE_SQL` all bind `lease_owner = :worker_id`. A worker whose lease was
+  taken over matches zero rows and logs `job.lease_lost` instead of retrying.
+- **A renewal is not a transition and not a reclaim.** `RENEW_LEASE_SQL` moves only
+  `lease_expires_at`, only for the current owner, only on a `RUNNING` row. It cannot
+  create a lease, take one back, change `status`, change `attempt` or finish a job,
+  which is why a lost lease is a dead end for the worker that lost it.
 - **No `PENDING` → `SUCCEEDED` skip.** A row cannot become terminal without first
   being claimed, because `COMPLETE_SQL`'s `status = 'RUNNING'` guard is the only path
   to `SUCCEEDED`.
@@ -73,8 +78,10 @@ expired `RUNNING` job is never starved behind a busy `PENDING` queue.
 ### Where `attempt` increments
 
 Only at claim and reclaim time, in the shared body of `RECLAIM_SQL` and `PENDING_SQL`
-(the `_CLAIM_UPDATE` template). `COMPLETE_SQL`, `FAIL_SQL` and `SWEEP_SQL` never touch
-`attempt`. Per [ADR 0010](../decisions/0010-postgres-job-store.md#consequences) this
+(the `_CLAIM_UPDATE` template). `COMPLETE_SQL`, `FAIL_SQL`, `SWEEP_SQL` and
+`RENEW_LEASE_SQL` never touch `attempt`: a heartbeat is not progress, so renewing a
+lease must not spend a retry. Per
+[ADR 0010](../decisions/0010-postgres-job-store.md#consequences) this
 means a worker that crashes mid-job has already consumed an attempt, so a crash is
 charged against the job's budget; `ck_jobs_attempt_bounds` keeps `attempt` from
 exceeding `max_attempts`.
@@ -83,9 +90,13 @@ exceeding `max_attempts`.
 
 `job_effects` rows are **not** part of the job state machine. They move `INTENT` →
 `APPLIED`, driven by the handler's claim and confirmation (`CLAIM_EFFECT_SQL`,
-`APPLY_EFFECT_SQL`) or by the reconciler for a stranded `INTENT` older than
-`EFFECT_RECONCILE_GRACE_SECONDS` (`PENDING_EFFECTS_SQL`, `LOCK_PENDING_EFFECT_SQL`,
-`APPLY_EFFECT_SQL`). No job-statement reads or writes `job_effects.status`, so a job
+`APPLY_EFFECT_SQL`) or by the reconciler for a stranded `INTENT`
+(`PENDING_EFFECTS_SQL`, `LOCK_PENDING_EFFECT_SQL`, `APPLY_EFFECT_SQL`). The two
+reconciler reads split the work: `PENDING_EFFECTS_SQL` is an unlocked candidate list
+filtered by effect age against `EFFECT_RECONCILE_GRACE_SECONDS`, and
+`LOCK_PENDING_EFFECT_SQL` is the decision, taken under the effect row lock, which
+skips any `INTENT` row whose job still holds a live lease. No job-statement reads or
+writes `job_effects.status`, so a job
 can be `FAILED` with its effect `INTENT`, or `SUCCEEDED` with it `APPLIED`. Rows
 cascade with the job.
 

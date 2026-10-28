@@ -8,6 +8,7 @@
 4. **PR-2-03 (Recovery):** Done ([#17](https://github.com/rlancaster243/api-engineering-lab/pull/17)) — retries with backoff, lease-expiry recovery, crash falsification tests.
 5. **PR-2-04a (Effects):** Done ([#19](https://github.com/rlancaster243/api-engineering-lab/pull/19)) — transactional outbox plus reconciler, so a reclaimed job does not repeat an external side effect (falsification case 4).
 6. **PR-2-04b (Idempotency):** Done ([#20](https://github.com/rlancaster243/api-engineering-lab/pull/20)) — `Idempotency-Key` on `POST /v1/jobs` per ADR 0011, so a retried submission replays one job instead of creating a second.
+7. **PR-2-06 (Heartbeat):** Lease heartbeat plus a live-lease guard on the reconciler — a long handler keeps its lease, and the reconciler no longer applies an effect underneath a handler that is still alive.
 
 **Project 2 is complete.** Submission idempotency, the job store, the worker, retry
 and lease recovery, and the effect outbox are all in place. Completion record:
@@ -114,7 +115,11 @@ Events: `worker.started`, `worker.stopped`, `job.claimed`, `job.recovered`,
 `effect.reconciled`, `worker.cycle_failed`. `job.recovered` marks a job taken over
 from a worker whose lease expired; the accompanying `job.claimed` for the same row
 follows it. `effect.reconciled` marks a stranded outbox effect the reconciler
-applied. `worker.cycle_failed` is the containment event for a cycle that raised
+applied. `job.lease_lost` is logged twice at most per cycle: once by the heartbeat
+when a renewal finds the job no longer ours (and then it stops renewing), and once
+by `_finish` or `_fail` when the completion or failure write is refused. Seeing only
+the second is normal for a job that loses its lease after the handler returns.
+`worker.cycle_failed` is the containment event for a cycle that raised
 anywhere — the worker logs it and polls again instead of exiting.
 
 No payload, no result and no handler message is logged. A failure event carries
@@ -157,17 +162,27 @@ key, and make the external operation safe to repeat.
 `INTENT`. Each worker cycle runs `_reconcile_effects()` after the sweep and before
 the claim: it reads `INTENT` rows older than `EFFECT_RECONCILE_GRACE_SECONDS`,
 applies each through the handler's applier, marks it `APPLIED`, and logs
-`effect.reconciled` with `job_id`, `effect_key` and `age_seconds`. The grace period
-is why a live handler is not robbed mid-run: a young `INTENT` may still be applied
-by the worker that holds it, so the reconciler only takes rows that could not
-plausibly still be in flight.
+`effect.reconciled` with `job_id`, `effect_key` and `age_seconds`.
+
+Age alone is only a **candidate filter**. It cannot tell a stranded row from one
+whose handler is still alive, because a handler that renews its lease outlives any
+grace period you can configure. So the unlocked read produces a candidate list and
+nothing else; the decision is taken under the effect row's lock, in the same
+statement, by re-reading the job's lease. A live lease means skip: the handler owns
+the effect and may still be about to apply it. The check has to be at apply time —
+a heartbeat landing between an unlocked read and the apply revives the lease, so a
+read-time check would already have decided to apply.
+
+The lock covers the **effect row only** (`FOR UPDATE OF je`), never the joined job
+row, so a concurrent heartbeat is not blocked behind an apply. That matters: the
+heartbeat is what keeps a live handler's lease alive, so blocking it would be a way
+to turn a live job into a reconcilable one.
 
 Every worker reconciles on every cycle, so two of them will race for the same
-stranded row. The reconciler takes a `FOR UPDATE` row lock and holds it across the
-apply and the confirmation, so the loser blocks and then finds the row already
-`APPLIED` — the effect is applied once. A reconcile failure rolls the row back to
-`INTENT`, is logged by class, and the cycle carries on to the claim; it never stops
-the worker.
+stranded row. The reconciler holds the effect row lock across the apply and the
+confirmation, so the loser blocks and then finds the row already `APPLIED` — the
+effect is applied once. A reconcile failure rolls the row back to `INTENT`, is
+logged by class, and the cycle carries on to the claim; it never stops the worker.
 
 Effect claims are committed in their **own transaction**, never in the same one as
 job completion. The point of the outbox is that the claim outlives the failure of
@@ -181,12 +196,16 @@ claims:
 1. Expired `RUNNING` jobs with no attempts left are marked `FAILED` with a readable
    `last_error` and `finished_at`. This is what stops a crashed job on its last
    attempt from sitting in `RUNNING` forever.
-2. `INTENT` effects older than `EFFECT_RECONCILE_GRACE_SECONDS` are applied and
-   confirmed (see "Side effects and the outbox").
+2. `INTENT` effects older than `EFFECT_RECONCILE_GRACE_SECONDS` are candidates; each
+   is then checked under its row lock against the job's lease, and only those with no
+   live lease are applied and confirmed (see "Side effects and the outbox").
 3. Then the claim runs, **reclaim first**: an expired `RUNNING` job with attempts
    remaining is taken over before any `PENDING` work, so recovery cannot be starved
    by a busy queue.
 4. Then due `PENDING` jobs, oldest first.
+
+Once a job is claimed, its lease is renewed every `LEASE_SECONDS / 3` for as long as
+its handler runs, so a slow handler is not reclaimed at step 3.
 
 A handler failure is recorded in **one** statement that returns either `PENDING`
 (requeue, attempts remain) or `FAILED` (attempts exhausted). Requeued jobs get
@@ -200,10 +219,28 @@ Without that deferral a job that always raises would burn every attempt in
 milliseconds and starve everything behind it. Succeeding is always terminal, whatever
 attempts remain.
 
-Handlers must finish inside `LEASE_SECONDS`. There is no heartbeat yet, so a handler
-that outlives its lease can be reclaimed and run twice.
+Handlers no longer have to finish inside `LEASE_SECONDS`. The worker renews the
+lease every `LEASE_SECONDS / 3` while a handler is running, so a handler that takes
+longer than one lease keeps its job and is not reclaimed. Two things replace the old
+contract:
 
-## Known limitations (PR-2-04a / PR-2-04b)
+- **A renewal has to land.** The margin is two renewals: at a third of the lease,
+  one failed renewal leaves the next attempt with two thirds of the lease still to
+  run. A handler that blocks the process — a GIL-holding C call, a pause long enough
+  to stop the renewal thread — can still lose its lease.
+- **A lost lease is not survivable.** If the job is taken over mid-handler, the
+  renewal matches zero rows, the worker logs `job.lease_lost` **once** and stops
+  renewing, and the handler is left to finish. It is not interrupted: it may be
+  part-way through an external call, and killing it would be worse than letting it
+  return. Its completion and failure writes are `lease_owner`-scoped, so they are
+  refused and the job stays with its new owner. The handler's work is wasted, but
+  nothing of the old owner's is written.
+
+The renewal is strictly owner-scoped, so a worker that was taken over cannot revive
+its claim by renewing. A renewal is never a reclaim: zero rows is the end of the
+line, not something to retry.
+
+## Known limitations (PR-2-06)
 
 - **Recovery is worker-driven.** The sweep and the reconcile both run inside each
   worker. If no worker is running, nothing is reclaimed, terminated or reconciled.
@@ -211,15 +248,20 @@ that outlives its lease can be reclaimed and run twice.
   outbox makes a duplicate side effect detectable and skippable, and the reconciler
   covers a crash before confirmation, but a third-party call is still not exactly
   once — see "Side effects and the outbox".
-- **The reconciler can still duplicate an in-flight effect.** If a handler stalls
-  past `EFFECT_RECONCILE_GRACE_SECONDS` and then applies its effect, both it and the
-  reconciler apply. Choose the grace period to exceed the handler's worst case, and
-  keep the vendor call idempotent.
+- **A zombie handler can still duplicate an effect.** The reconciler's live-lease
+  check only protects a handler that *holds* its lease: a live handler's `INTENT`
+  row is skipped, and an `INTENT` row on a job with no live lease (expired, or
+  terminal) is applied. The gap is the handler that loses its lease and *then*
+  applies: it is a zombie, the reconciler is entitled to act on its row, and both
+  can apply. The heartbeat makes this much rarer — losing a lease now needs a
+  takeover — but it does not make it impossible. Keep the vendor call idempotent.
+- **A handler cannot be stopped once it loses its lease.** Renewal detects the loss
+  and records it, but the handler runs to completion because nothing safe can abort
+  a call already in flight. Its work is discarded, not rolled back: an external
+  effect it applied before its completion was refused stays applied.
 - **One effect per `(job_id, effect_key)`.** A genuinely repeatable effect — a
   per-attempt notification — needs an `effect_key` that includes the attempt, which
   this slice does not model.
-- **No heartbeat.** A handler that outlives `LEASE_SECONDS` can be reclaimed mid-run
-  and executed twice.
 - **No list endpoint, no auth, and only `echo` and `notify`.** Out of scope for this
   slice.
 
