@@ -3,14 +3,15 @@
 ## Progression
 
 1. **PR-2-00 (Foundation):** Done ([#11](https://github.com/rlancaster243/api-engineering-lab/pull/11)) — install, `DATABASE_URL`, Alembic, `GET /health`, CI postgres job.
-2. **PR-2-01 (Schema + submit):** Done (`dd365f2`) — `jobs` table (ADR 0010), `POST /v1/jobs` → 202 after commit, `GET /v1/jobs/{id}`.
+2. **PR-2-01 (Schema + submit):** Done ([#15](https://github.com/rlancaster243/api-engineering-lab/pull/15), `dd365f2`) — `jobs` table (ADR 0010), `POST /v1/jobs` → 202 after commit, `GET /v1/jobs/{id}`.
 3. **PR-2-02 (Worker):** Done ([#16](https://github.com/rlancaster243/api-engineering-lab/pull/16)) — claim/lease protocol, handler registry, separate worker process.
 4. **PR-2-03 (Recovery):** Done ([#17](https://github.com/rlancaster243/api-engineering-lab/pull/17)) — retries with backoff, lease-expiry recovery, crash falsification tests.
 5. **PR-2-04a (Effects):** Done ([#19](https://github.com/rlancaster243/api-engineering-lab/pull/19)) — transactional outbox plus reconciler, so a reclaimed job does not repeat an external side effect (falsification case 4).
-6. **PR-2-04b (Idempotency):** Done — `Idempotency-Key` on `POST /v1/jobs` per ADR 0011, so a retried submission replays one job instead of creating a second.
+6. **PR-2-04b (Idempotency):** Done ([#20](https://github.com/rlancaster243/api-engineering-lab/pull/20)) — `Idempotency-Key` on `POST /v1/jobs` per ADR 0011, so a retried submission replays one job instead of creating a second.
 
 **Project 2 is complete.** Submission idempotency, the job store, the worker, retry
-and lease recovery, and the effect outbox are all in place.
+and lease recovery, and the effect outbox are all in place. Completion record:
+[`docs/evidence/project-2-completion.md`](../docs/evidence/project-2-completion.md).
 
 ## Run locally
 
@@ -202,7 +203,7 @@ attempts remain.
 Handlers must finish inside `LEASE_SECONDS`. There is no heartbeat yet, so a handler
 that outlives its lease can be reclaimed and run twice.
 
-## Known limitations (PR-2-04)
+## Known limitations (PR-2-04a / PR-2-04b)
 
 - **Recovery is worker-driven.** The sweep and the reconcile both run inside each
   worker. If no worker is running, nothing is reclaimed, terminated or reconciled.
