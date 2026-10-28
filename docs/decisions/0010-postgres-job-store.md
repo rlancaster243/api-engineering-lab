@@ -51,6 +51,21 @@ Project 2 needs durable job state, worker claims, and client status queries. Int
 - **Recovery is worker-driven, not a scheduler.** The sweep that terminally fails
   exhausted expired jobs runs inline at the start of every worker cycle. If no
   worker is running, nothing recovers.
+- **The lease is renewable, and renewal is owner-scoped.** Since PR-2-06 a worker
+  renews the lease of the job it is running every `LEASE_SECONDS / 3`, so
+  `LEASE_SECONDS` bounds how long a worker may go silent rather than how long a
+  handler may run. `RENEW_LEASE_SQL` repeats the `lease_owner = :worker_id` guard
+  that `COMPLETE_SQL` and `FAIL_SQL` carry, so renewal is the third write that cannot
+  cross an ownership change: a worker whose lease was taken over renews zero rows
+  and learns it has lost the job *before* it tries to complete. That is what makes a
+  lost lease detectable rather than silently overwritten, and it is why a renewal is
+  never a reclaim — zero rows ends the renewal, it does not take the job back.
+  `attempt` is untouched by renewal; only claim and reclaim consume budget.
+- **A live job is not reconcilable.** The effect reconciler's age filter is only a
+  candidate list; the decision is taken under the effect row lock and skips any
+  `INTENT` row whose job still holds a live lease. Age alone cannot make that call
+  now that a lease can be renewed indefinitely. The residual gap is a handler that
+  loses its lease and *then* applies, which no lease check can catch.
 
 ## References
 

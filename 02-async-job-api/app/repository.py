@@ -68,6 +68,43 @@ COMPLETE_SQL = text(
     """
 ).bindparams(bindparam("result", type_=JSONB(none_as_null=True)))
 
+# How long the renewal statement may wait for a row lock.
+#
+# ``Worker._process`` stops the heartbeat in a ``finally`` before any completion
+# write, and ``_LeaseHeartbeat.stop`` joins that thread without a timeout: a renewal
+# still in flight could otherwise commit after the completion and leave a finished
+# row holding a live lease. An unbounded join is only safe if the statement it waits
+# for is bounded, and by default it is not — a concurrent reclaim holds this row
+# under ``SELECT ... FOR UPDATE`` for the length of its own transaction, so a plain
+# renewal would block indefinitely and the join would hang the whole worker on a
+# handler that has already returned. The wait is therefore bounded here, at the
+# statement, rather than at the join.
+#
+# Exceeding it fails the renewal with SQLSTATE ``55P03`` (``lock_not_available``),
+# which surfaces as ``OperationalError`` and is handled exactly like any other
+# failed renewal: logged by class, counted as one missed renewal, and retried on the
+# next tick while the lease still has two thirds of its life left.
+RENEWAL_LOCK_TIMEOUT_MS = 500
+
+# ``SET LOCAL`` takes a literal, not a bind parameter, so the value is interpolated
+# from the integer constant above — never from anything a caller supplies.
+SET_RENEWAL_LOCK_TIMEOUT_SQL = text(f"SET LOCAL lock_timeout = '{RENEWAL_LOCK_TIMEOUT_MS}ms'")
+
+# The heartbeat. Owner-scoped for the same reason as COMPLETE_SQL and FAIL_SQL: a
+# worker that was taken over must not be able to revive its claim by renewing, so a
+# stale renewal matches zero rows instead of pushing a new owner's lease forward.
+# The status guard keeps a finished row from being dragged back to a live lease.
+# Zero rows is the whole signal — a renewal is not a claim and cannot take a job
+# back — so the caller stops renewing rather than retrying.
+RENEW_LEASE_SQL = text(
+    """
+    UPDATE jobs
+    SET lease_expires_at = now() + make_interval(secs => :lease_seconds)
+    WHERE id = :job_id AND lease_owner = :worker_id AND status = 'RUNNING'
+    RETURNING id
+    """
+)
+
 # Expired jobs with no attempts left have no future in the claim path: the
 # `attempt < max_attempts` guard refuses them, so without this they would sit
 # RUNNING forever. Terminally failing them here is what keeps the claim's guard
@@ -125,8 +162,12 @@ APPLY_EFFECT_SQL = text("""
     RETURNING job_id
 """)
 
-# ``created_at < now() - grace`` is what keeps the reconciler off a live handler's
-# in-flight row: a young INTENT may still be applied by the worker holding it.
+# The read side. ``created_at < now() - grace`` makes this a *candidate* list and
+# nothing more: an ``INTENT`` row is old enough to be suspicious, which is all an
+# unlocked read can safely say. Age alone cannot tell a stranded row from one whose
+# handler is still alive — a handler that renews its lease outlives any grace period
+# — so this query must never be the thing that decides to apply. The decision is
+# ``LOCK_PENDING_EFFECT_SQL``; see there.
 PENDING_EFFECTS_SQL = text("""
     SELECT job_id, effect_key, detail FROM job_effects
     WHERE status = 'INTENT' AND created_at < now() - make_interval(secs => :grace_seconds)
@@ -134,24 +175,44 @@ PENDING_EFFECTS_SQL = text("""
     LIMIT :limit
 """)
 
-# Every worker reconciles on every cycle, so two of them will race for the same
-# stranded row as soon as there are two. ``FOR UPDATE`` — not ``SKIP LOCKED`` — is
-# the fix: the loser blocks until the winner commits, then re-checks its predicate
-# against the new row version, sees APPLIED and drops the row. The effect is applied
-# once. ``SKIP LOCKED`` would also apply once here, but it would hide contention;
-# blocking makes the second reconciler simply wait and then find nothing to do.
+# The decision. Two guards, for two different races, both re-evaluated under the
+# lock because both are mutable:
 #
-# The ``status`` predicate is repeated here on purpose. It is the mutable one: the
-# other reconciler's commit is exactly what changes it, so re-checking it under the
-# lock is what turns the loser's read into ``None``. The grace condition is not
-# repeated — ``created_at`` is immutable, so a row that satisfied it in the unlocked
-# read still satisfies it here.
+# * ``status = 'INTENT'`` is the reconciler-vs-reconciler guard. Every worker
+#   reconciles on every cycle, so two of them will race for the same stranded row
+#   as soon as there are two. ``FOR UPDATE`` — not ``SKIP LOCKED`` — is the fix: the
+#   loser blocks until the winner commits, then re-checks its predicate against the
+#   new row version, sees APPLIED and drops the row. The effect is applied once.
+#   ``SKIP LOCKED`` would also apply once here, but it would hide contention;
+#   blocking makes the second reconciler simply wait and then find nothing to do.
+#
+# * ``NOT (j.status = 'RUNNING' AND j.lease_expires_at > now())`` is the
+#   reconciler-vs-handler guard: a live lease means a handler may still be about to
+#   apply, so the reconciler must skip. This is why the guard is here and not in the
+#   read: a heartbeat can land between an unlocked read and this statement, reviving
+#   the lease, and a read-time check would already have decided to apply. Only a
+#   check in the same statement that takes the lock sees the lease the apply is
+#   competing with.
+#
+# ``FOR UPDATE OF je`` — not bare ``FOR UPDATE`` — names the effect row only. A bare
+# ``FOR UPDATE`` would also lock the joined ``jobs`` row and block the heartbeat's
+# ``UPDATE jobs SET lease_expires_at = ...`` for the whole apply-and-confirm. The
+# heartbeat must stay cheap and unblocked: a handler renewing its lease is the thing
+# that keeps this guard from firing, so serialising it behind the reconciler would
+# defeat it.
+#
+# The ``created_at`` grace bound is not repeated here: it is immutable, so a row that
+# satisfied it in the unlocked read still satisfies it now, and repeating it would
+# look like a second guard while guarding nothing. ``age_seconds`` is still reported
+# for the ``effect.reconciled`` event.
 LOCK_PENDING_EFFECT_SQL = text("""
-    SELECT job_id, effect_key, detail,
-           EXTRACT(EPOCH FROM (now() - created_at))::bigint AS age_seconds
-    FROM job_effects
-    WHERE job_id = :job_id AND effect_key = :effect_key AND status = 'INTENT'
-    FOR UPDATE
+    SELECT je.job_id, je.effect_key, je.detail,
+           EXTRACT(EPOCH FROM (now() - je.created_at))::bigint AS age_seconds
+    FROM job_effects je
+    JOIN jobs j ON j.id = je.job_id
+    WHERE je.job_id = :job_id AND je.effect_key = :effect_key AND je.status = 'INTENT'
+      AND NOT (j.status = 'RUNNING' AND j.lease_expires_at > now())
+    FOR UPDATE OF je
 """)
 
 
@@ -266,6 +327,31 @@ def sweep_expired(session: Session) -> list[tuple[uuid.UUID, int]]:
     return [(row.id, row.attempt) for row in rows]
 
 
+def renew_lease(session: Session, *, job_id: uuid.UUID, worker_id: str, lease_seconds: int) -> bool:
+    """Push this worker's lease forward; ``False`` means the lease is gone.
+
+    ``True`` is one row renewed. ``False`` is zero rows, and that is not a transient
+    error to retry: it means this worker no longer owns the job — another worker
+    reclaimed it, or it already reached a terminal state. The caller must stop
+    renewing. Completion and failure are refused from here on by their own
+    ``lease_owner`` guards, which ``_finish`` and ``_fail`` already report as
+    ``job.lease_lost``.
+
+    ``SET LOCAL lock_timeout`` bounds how long this statement may wait for the job
+    row: a concurrent reclaim holds it under ``FOR UPDATE``, and the heartbeat's join
+    is unbounded, so an unbounded wait here would hang the worker after its handler
+    returned. The timeout raises rather than returning ``False`` — a lock is not a
+    lost lease — so it propagates to the caller's error path. ``SET LOCAL`` scopes it
+    to this transaction, so no other statement on the connection inherits it.
+    """
+    session.execute(SET_RENEWAL_LOCK_TIMEOUT_SQL)
+    row = session.execute(
+        RENEW_LEASE_SQL,
+        {"job_id": job_id, "worker_id": worker_id, "lease_seconds": lease_seconds},
+    ).one_or_none()
+    return row is not None
+
+
 def complete_job(
     session: Session,
     *,
@@ -352,11 +438,17 @@ def mark_effect_applied(session: Session, *, job_id: uuid.UUID, effect_key: str)
 def pending_effects(
     session: Session, *, grace_seconds: int, limit: int = 100
 ) -> list[tuple[uuid.UUID, str, dict | None]]:
-    """Stranded ``INTENT`` effects older than ``grace_seconds``, oldest first.
+    """A **candidate** list of stranded ``INTENT`` effects older than ``grace_seconds``.
 
-    The grace window is what keeps the reconciler off a live handler's row: an
-    ``INTENT`` younger than the lease's likely in-flight window may still be applied
-    by the worker holding it.
+    Read-only and unlocked, so it can only apply an age filter: a row that is old
+    enough to be suspicious, not a row proven abandoned. It deliberately does not
+    check the job's lease — a live handler may still own a row that has outlived the
+    grace window.
+
+    The decision to apply belongs to :func:`lock_pending_effect`, which re-evaluates
+    the mutable conditions (the effect's status and the job's lease) under the row
+    lock. Nothing may be applied on the strength of this read alone, and the grace
+    window is a cheap prefilter, not the safety property.
     """
     rows = session.execute(
         PENDING_EFFECTS_SQL, {"grace_seconds": grace_seconds, "limit": int(limit)}
@@ -367,17 +459,28 @@ def pending_effects(
 def lock_pending_effect(
     session: Session, *, job_id: uuid.UUID, effect_key: str
 ) -> tuple[int, dict | None] | None:
-    """Lock a still-``INTENT`` effect row for this worker; ``None`` if it is not one.
+    """The authoritative gate: lock a still-``INTENT`` effect and decide whether to apply.
 
-    Returns ``(age_seconds, detail)`` for the caller that won the lock. The lock is
-    held until the caller commits or rolls back, which is what makes the apply
-    exclusive: a second reconciler blocks here, then re-evaluates the predicate
+    Returns ``(age_seconds, detail)`` for the caller that won the lock, or ``None``
+    when the effect must be left alone — it is no longer ``INTENT``, or its job holds
+    a live lease and its handler may still apply it.
+
+    Callers reach this after :func:`pending_effects`, whose unlocked read is only a
+    candidate list. The guard that matters is here, evaluated in the same statement
+    that takes the lock, because both conditions it reads are mutable and can change
+    between a read and an apply: another reconciler confirming the effect, and a
+    heartbeat renewing the job's lease. A read-time lease check would be racy exactly
+    that way — a renewal landing after the check revives the lease and the duplicate
+    still happens.
+
+    The lock is held until the caller commits or rolls back, which is what makes the
+    apply exclusive: a second reconciler blocks here, then re-evaluates the predicate
     against the committed row and gets ``None`` because the status is now
-    ``APPLIED``.
+    ``APPLIED``. The lock covers the effect row only (``FOR UPDATE OF je``), never the
+    job row, so a concurrent heartbeat is not blocked behind an apply.
 
-    Only callers that already read the row through :func:`pending_effects` should
-    call this — that is where the grace-period filter lives. Repeating an immutable
-    ``created_at`` bound here would look like a second guard while guarding nothing.
+    The guard protects the **live** case only. A handler that loses its lease and
+    *then* applies can still duplicate; see the README's known limitations.
     """
     row = session.execute(
         LOCK_PENDING_EFFECT_SQL, {"job_id": job_id, "effect_key": effect_key}
