@@ -31,6 +31,7 @@ REQUEST_ID_HEADER = "X-Request-ID"
 
 class ErrorCode(StrEnum):
     JOB_NOT_FOUND = "JOB_NOT_FOUND"
+    IDEMPOTENCY_CONFLICT = "IDEMPOTENCY_CONFLICT"
     VALIDATION_ERROR = "VALIDATION_ERROR"
     ROUTE_NOT_FOUND = "ROUTE_NOT_FOUND"
     METHOD_NOT_ALLOWED = "METHOD_NOT_ALLOWED"
@@ -46,6 +47,9 @@ class ErrorSpec:
 
 ERROR_SPECS: dict[ErrorCode, ErrorSpec] = {
     ErrorCode.JOB_NOT_FOUND: ErrorSpec(404, "Job not found."),
+    ErrorCode.IDEMPOTENCY_CONFLICT: ErrorSpec(
+        409, "This Idempotency-Key was already used with a different request."
+    ),
     ErrorCode.VALIDATION_ERROR: ErrorSpec(422, "The request is invalid."),
     ErrorCode.ROUTE_NOT_FOUND: ErrorSpec(404, "No such route."),
     ErrorCode.METHOD_NOT_ALLOWED: ErrorSpec(405, "Method not allowed for this route."),
