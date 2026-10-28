@@ -9,7 +9,7 @@ See the full 8-week implementation plan in [`docs/API_ENGINEERING_SYLLABUS.md`](
 | Phase | Directory | Milestones & Focus |
 |-------|-----------|--------------------|
 | 1 | [`01-rest-api/`](01-rest-api/) | **Milestone 0:** reproducible foundation, `/health` contract, lint + CI.<br>**Project 1A:** Saved Content CRUD (`POST/GET/PATCH/DELETE /v1/items`), PostgreSQL persistence, stable `UNIQUE(user_id, content_id)` ownership grain.<br>**Project 1B:** Authentication and per-user ownership enforcement (two-user isolation). |
-| 2 | [`02-async-job-api/`](02-async-job-api/) | **Project 2:** Durable async jobs (`202 Accepted`), status queries, worker leases, retries, idempotency, and crash recovery. |
+| 2 | [`02-async-job-api/`](02-async-job-api/) | **Project 2:** Durable async jobs (`202 Accepted`), status queries, worker leases, retries, submission idempotency, effect outbox, and crash recovery. Complete — see the [completion record](docs/evidence/project-2-completion.md). |
 | 3 | [`03-api-hardening/`](03-api-hardening/) | **Project 3:** Investigate and repair a real defect/failure mode in an existing API with failing-before/passing-after regression tests. |
 
 Progress through the modules in order; each phase builds on the verification discipline established in earlier phases.
