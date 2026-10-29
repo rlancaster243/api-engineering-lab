@@ -1,13 +1,14 @@
 # Project 3 completion record
 
 **Repository:** `03-api-hardening/` — multi-tenant asset registry
-**Status:** Complete on `main` at `67aae39`. The investigation fixed one planted defect
-([#24](https://github.com/rlancaster243/api-engineering-lab/pull/24), `20eac5c`), one defect
-nobody planted ([#25](https://github.com/rlancaster243/api-engineering-lab/pull/25),
-`cb3b2b1`), and two adjacent defects in
-[#26](https://github.com/rlancaster243/api-engineering-lab/pull/26), `67aae39`. The suite is
-53 passed, zero skips. One planted defect — the split tag/timestamp transaction — is still
-present and was deferred deliberately; see [Known limitations](#known-limitations).
+**Status:** Complete. The investigation fixed one planted defect
+([#24](https://github.com/rlancaster243/api-engineering-lab/pull/24)), one defect nobody
+planted ([#25](https://github.com/rlancaster243/api-engineering-lab/pull/25)), two adjacent
+defects in [#26](https://github.com/rlancaster243/api-engineering-lab/pull/26), and the split
+tag/timestamp transaction in
+[#28](https://github.com/rlancaster243/api-engineering-lab/pull/28). The suite is 53 passed,
+zero skips. **No seeded defect remains in `03-api-hardening/`**; the known limitations that
+remain are design scope, not defects, and are listed [below](#known-limitations).
 
 ## What the module is
 
@@ -24,17 +25,22 @@ defects were seeded, not discovered in production.** No proprietary YouVersion
 implementation, data, credential or internal document was copied, read into this module, or
 published in it. The §13 decision that selected this route is recorded in the syllabus.
 
-## Merged pull requests
+## Pull requests
+
+The PRs that delivered this module. The commit column names the commit that carried each
+change on `main`; it is left blank where that commit only exists once the PR merges. Each link
+renders its own merge state, so this table does not restate it.
 
 | PR | Commit | Scope |
 |----|--------|-------|
 | [#23](https://github.com/rlancaster243/api-engineering-lab/pull/23) | `e873081` | The asset registry itself: schema, tenant-scoped repository, service layer, error envelope, 38-test suite passing while four defects are present, ADR 0012 filed as Proposed |
 | [#24](https://github.com/rlancaster243/api-engineering-lab/pull/24) | `20eac5c` | Blind investigation of the escalated report: tenant predicate added to `get_by_id` and `tags_for`, regression test added |
 | [#25](https://github.com/rlancaster243/api-engineering-lab/pull/25) | `cb3b2b1` | The unplanted finding: `APP_ENV` required, no default anywhere, local mode decided once from the loaded `Settings` |
-| [#26](https://github.com/rlancaster243/api-engineering-lab/pull/26) | `67aae39` | D2 exception leak closed, D4 no-op batch answers `207`, README corrected, D3 kept as a known limitation |
+| [#26](https://github.com/rlancaster243/api-engineering-lab/pull/26) | `67aae39` | D2 exception leak closed, D4 no-op batch answers `207`, README corrected, D3 deferred as a known limitation |
+| [#28](https://github.com/rlancaster243/api-engineering-lab/pull/28) | — | D3 closed: the parent's `updated_at` moves inside `AssetRepository.add_tags`'s single commit, `touch` removed, the test that pinned the split write inverted |
 
-Test counts move with each commit, measured on this tree: **38** at `e873081`, **39** at
-`20eac5c`, **51** at `cb3b2b1`, **53** at `67aae39`.
+Test counts move with each change, measured on this tree: **38** after #23, **39** after #24,
+**51** after #25, **53** after #26, and **53** after #28 (one test inverted, one added).
 
 ## What the investigation demonstrates — and what it does not
 
@@ -344,9 +350,10 @@ production debugging: the module is small, the investigator wrote none of the su
 pressure into the story because there was none, and the finding took a trace that was already
 underway to reach. It is the strongest evidence in the phase, not unlimited evidence.
 
-## The two follow-up fixes
+## The follow-up fixes
 
-Both in `67aae39` ([#26](https://github.com/rlancaster243/api-engineering-lab/pull/26)).
+D2 and D4 both in [#26](https://github.com/rlancaster243/api-engineering-lab/pull/26); D3 in
+[#28](https://github.com/rlancaster243/api-engineering-lab/pull/28).
 
 ### D2 — exception text reached the client
 
@@ -394,6 +401,49 @@ per-item `results` body, which raising a contract error would have discarded, be
 | Some reprocessed, some failed | `200` — `results` marks each item |
 | No item reprocessed, at least one failed | `207 Multi-Status` |
 
+### D3 — a tag write was not atomic with its parent's `updated_at`
+
+`POST /v1/assets/{id}/tags` committed the tag rows and then advanced the parent's
+`updated_at` in a second transaction. A failure between the two commits left tag rows
+committed while the caller was told `500`, against an `updated_at` that never moved, so a
+consumer ordering by `updated_at` missed the change. It was deferred in `67aae39` because the
+fix is a transaction-boundary move rather than a local patch, and it was recoverable by retry
+— the inserts are idempotent — which is why it was the correct thing to defer and the
+correct thing to close.
+
+The parent's `UPDATE assets SET updated_at = ...` now runs inside `AssetRepository.add_tags`,
+ahead of that method's single `commit()`, and the service makes one repository call:
+
+```diff
+ app/repository.py   def add_tags(self, tenant_id, asset_id, tags):
+         self.connection.executemany(
+             "INSERT OR IGNORE INTO asset_tags (asset_id, tag, created_at) VALUES (?, ?, ?)", ...
+         )
++        self.connection.execute(
++            "UPDATE assets SET updated_at = ? WHERE id = ? AND tenant_id = ?",
++            (timestamp, asset_id, tenant_id),
++        )
+         self.connection.commit()
+-    def touch(self, tenant_id, asset_id):        # removed: no other caller
+-        ...
+ 
+ app/service.py      (in add_tags)    self.repository.touch(self.tenant_id, asset_id)
+```
+
+`AssetRepository.touch` was deleted rather than left unused — `grep -rn "touch" app/ tests/`
+found its one caller in the service and nothing else. `_visible`'s tenant check still runs
+before any write, and the `UPDATE` keeps its `tenant_id` predicate. No new abstraction, and no
+`BEGIN IMMEDIATE`: SQLite's default deferred transaction already makes the two statements one
+atomic unit, and the write lock is taken at the first write inside it.
+
+The test that pinned the defect, `test_tag_write_survives_a_failure_after_the_tag_rows_land`,
+was inverted into
+`test_a_failed_tag_write_leaves_no_tag_row_and_does_not_advance_the_timestamp`. The inversion
+is legitimate because the old assertion contradicted the response the caller received — a
+`500 INTERNAL_ERROR` says the write did not happen, so a surviving row is state the client was
+never told about — and because the inverted test is stricter: it asserts nothing is stored,
+that the timestamp did not move, and that an ordinary retry lands the tag.
+
 ## Test-driven mutation results
 
 Each fix was reverted alone on the fixed tree, the suite re-run, then restored. Quotes below
@@ -431,6 +481,16 @@ defect reproduced verbatim — the published key authenticated again.
 
 Restored tree after each: `53 passed`.
 
+**#28 — one mutation:**
+
+| Reverted | Result | Named test that went red |
+|---|---|---|
+| D3: revert `add_tags` and the service call to the `67aae39` split write | `1 failed, 52 passed, 1 warning in 0.77s` | `tests/test_tags.py::test_a_failed_tag_write_leaves_no_tag_row_and_does_not_advance_the_timestamp` |
+
+Restored tree after the revert: `53 passed`. The named failure is
+`assert ['finance'] == []` — the tag row committed by the first transaction, which is the
+defect itself, not a setup error.
+
 The tests that support these fixes and are not themselves mutation targets:
 `test_contention_is_unavailable_without_the_driver_text` (the `503` contention path also says
 nothing specific), `test_reprocess_answers_200_when_something_succeeded` (partial failure
@@ -441,7 +501,7 @@ stays `200`), `test_unknown_app_env_is_rejected`, `test_production_startup_seeds
 
 ## Verification record
 
-On `main` at `67aae39`, in `03-api-hardening/`:
+The tree before D3 was closed, at `67aae39`, in `03-api-hardening/`:
 
 ```bash
 uv sync --locked --extra dev
@@ -475,23 +535,56 @@ Failing-before was re-established for this record rather than taken from the PR 
 No PostgreSQL involvement: this module is SQLite by ADR 0012 and nothing here exercises MVCC,
 row locking, serialization failure or `READ COMMITTED` visibility. **§14 evidence for this
 phase stops at "tested on SQLite".** It is not PostgreSQL transaction evidence, and nothing
-in the D3 entry below should be read as a PostgreSQL locking finding.
+in the D3 fix should be read as a PostgreSQL locking finding.
+
+### D3 — closed in [#28](https://github.com/rlancaster243/api-engineering-lab/pull/28)
+
+Measured on the #28 branch head, in `03-api-hardening/`:
+
+```bash
+uv sync --locked --extra dev
+uv run ruff check . && uv run ruff format --check .
+uv run pytest -q
+uv run pytest -q -rs
+```
+
+```text
+All checks passed!
+20 files already formatted
+53 passed, 1 warning in 0.75s
+```
+
+The count is unchanged because the fix inverted one test and added one. `-rs` reports no skip
+lines; the single warning is the same `fastapi.testclient` deprecation. Confirmed
+independently in CI on the same branch head (`lint & pytest — 03-api-hardening`):
+`53 passed, 1 warning in 1.20s`, with `All checks passed!` and `20 files already formatted`
+from the Ruff step.
+
+Failing-before for D3, on the pre-fix app code with the new test added:
+
+```text
+>       assert stored_tags(connection, created["id"]) == []
+E       AssertionError: assert ['finance'] == []
+tests/test_tags.py:61: AssertionError
+1 failed, 1 warning in 0.08s
+```
+
+The request answered `500 INTERNAL_ERROR` and the tag row existed anyway. The test drives the
+failure with a `BEFORE UPDATE OF updated_at` trigger that raises `disk I/O error`, so the
+rollback it asserts is SQLite's, not one the test simulated by patching a method.
+
+Mutation: `app/repository.py` and `app/service.py` restored to `67aae39` with the new test
+kept gives `1 failed, 52 passed`, the failure being the same `assert ['finance'] == []`;
+restored, `53 passed`.
 
 ## Known limitations
 
 Mirrored from the current `03-api-hardening/README.md`, which is authoritative if the two
-disagree.
+disagree. **No seeded defect remains**: D3 was the last one and it is closed in
+[#28](https://github.com/rlancaster243/api-engineering-lab/pull/28), documented in the D3
+section of the verification record above. Everything below is design scope rather than a
+defect.
 
-- **D3 — a tag write is not atomic with its parent's `updated_at`.** `POST
-  /v1/assets/{id}/tags` commits the tag rows, then advances the asset's `updated_at` in a
-  second transaction. A failure between the two commits leaves a tag the caller was told was
-  not created, and an `updated_at` that never moved, so a consumer ordering by `updated_at`
-  misses the change. Present on `main` and **deferred rather than fixed**: closing it needs
-  the transaction boundary moved into the repository so both statements share one commit, not
-  a local patch at either call site. It is recoverable by retry — the inserts are idempotent,
-  so a second request lands the same tags and repairs the timestamp. The current behaviour is
-  pinned by `tests/test_tags.py::test_tag_write_survives_a_failure_after_the_tag_rows_land`,
-  so closing it means inverting that test, not adding one.
 - **One file, one writer at a time.** SQLite serialises writers, so this is not a deployment
   story for concurrent write load; `timeout=5.0` turns sustained contention into a `503`
   rather than an indefinite hang.
@@ -514,7 +607,7 @@ This is a lab system. It is not production-ready.
 ## Assistance disclosure
 
 Every implementation in this repository was AI-assisted. The Project 3 service, the
-investigation, the three fixes, the tests and this record were written by AI coding agents on
+investigation, the four fixes, the tests and this record were written by AI coding agents on
 Cursor Cloud Agents (commits carry `Assisted-by: Cursor` and `Co-authored-by` trailers). Each
 pull request was reviewed and merged by the repository owner, who also took the `207`-not-`503`
 decision and set the scope of each brief.
