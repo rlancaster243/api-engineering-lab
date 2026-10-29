@@ -154,18 +154,10 @@ what the choice does not cover.
 - `checksum` is derived from the *declared* metadata (URI, content type, size), not
   from the bytes. Nothing in this service fetches the object.
 - No rate limiting. Keys are per tenant and there is no quota.
-- **A tag write is not atomic with its parent's `updated_at`.** `POST
-  /v1/assets/{id}/tags` commits the tag rows, then advances the asset's `updated_at` in a
-  second transaction. A failure between the two commits leaves a tag the caller was told
-  was not created, and an `updated_at` that never moved, so a consumer ordering by
-  `updated_at` misses the change. Deferred rather than fixed: closing it needs the
-  transaction boundary moved into the repository so both statements share one commit, not
-  a local patch at either call site. It is recoverable by retry — the inserts are
-  idempotent, so a second request lands the same tags and repairs the timestamp.
 
 ## Fixed
 
-Two defects found during the hardening review and closed in a follow-up; both are recorded
+Three defects found during the hardening review and closed in follow-ups; all are recorded
 here so a reader does not treat the description above as the whole story.
 
 - **Exception text reached the client.** An unexpected exception rendered `str(exc)` in the
@@ -180,3 +172,13 @@ here so a reader does not treat the description above as the whole story.
   `{"processed": 0, "failed": 3}` when every id failed. That case is now `207`, keeping the
   per-item `results`; partial and full success stay `200`. Covered by
   `tests/test_batch.py::test_reprocess_answers_207_when_every_item_failed`.
+- **A tag write was not atomic with its parent's `updated_at`.** `POST
+  /v1/assets/{id}/tags` committed the tag rows, then advanced the asset's `updated_at` in a
+  second transaction, so a failure between the two commits left a tag the caller had been
+  told was not created, against an `updated_at` that never moved — a consumer ordering by
+  `updated_at` missed the change. Both statements now sit in `AssetRepository.add_tags`
+  ahead of its single `commit()`, and the service no longer calls a second repository method
+  for the timestamp (`touch` was removed with its only caller). A failed request now leaves
+  no tag row and does not move the timestamp, so retrying is the whole recovery.
+  `tests/test_tags.py::test_a_failed_tag_write_leaves_no_tag_row_and_does_not_advance_the_timestamp`
+  covers it; the previous test that pinned the split write was inverted, not added to.

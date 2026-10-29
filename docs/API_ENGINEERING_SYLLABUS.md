@@ -353,11 +353,13 @@ their evidence records are on `main`: [Project 1](evidence/project-1-completion.
 [Project 2](evidence/project-2-completion.md), [Project 3](evidence/project-3-completion.md).
 The §13 source-code question is resolved. What is left is not code:
 
-1. **D3 in `03-api-hardening/`** — the split tag/timestamp transaction, deliberately deferred.
-   Closing it moves the transaction boundary into the repository so both statements share one
-   commit, and inverts `tests/test_tags.py::test_tag_write_survives_a_failure_after_the_tag_rows_land`.
-   It is the one seeded defect still present, and it is a defensible next change rather than an
-   oversight: it is recoverable by retry today.
+1. ~~**D3 in `03-api-hardening/`** — the split tag/timestamp transaction, deliberately deferred.~~
+   **Closed** ([#28](https://github.com/rlancaster243/api-engineering-lab/pull/28)):
+   the transaction boundary moved into `AssetRepository.add_tags`, so the tag rows and the
+   parent's `updated_at` share one commit, and
+   `test_tag_write_survives_a_failure_after_the_tag_rows_land` was inverted into
+   `test_a_failed_tag_write_leaves_no_tag_row_and_does_not_advance_the_timestamp`. No seeded
+   defect remains in `03-api-hardening/`.
 2. **ADR 0012 is still Proposed.** Only the repository owner moves an ADR to Accepted; nothing
    in the Project 3 work changes the SQLite persistence decision it records.
 3. **The §14 independent-implementation box stays unchecked** unless unaided work is actually

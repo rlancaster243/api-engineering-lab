@@ -1,8 +1,8 @@
 """Asset registry use cases: tenant scope in, contract errors out.
 
 The service owns the transaction boundaries. Repository methods each commit what they
-write, so an operation that spans two of them is not atomic; that is called out where
-it happens below.
+write, so an operation is made atomic by keeping it inside one repository method rather
+than by the service calling two.
 """
 
 import hashlib
@@ -73,12 +73,11 @@ class AssetRegistry:
 
     def add_tags(self, asset_id: str, body: TagCreate) -> AssetDetail:
         try:
+            # One repository call, one commit: the tag rows and the parent's `updated_at`
+            # land together, so a failure leaves neither behind.
             self.repository.add_tags(self.tenant_id, asset_id, body.tags)
         except AssetNotFound:
             raise ApiError(ErrorCode.ASSET_NOT_FOUND) from None
-        # The parent's timestamp is advanced after the tag rows land, so a tag write is
-        # never invisible to a client polling the asset.
-        self.repository.touch(self.tenant_id, asset_id)
         row = self.repository.get_by_id(self.tenant_id, asset_id)
         assert row is not None
         return AssetDetail(

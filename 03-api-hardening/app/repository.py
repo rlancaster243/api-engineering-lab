@@ -96,16 +96,12 @@ class AssetRepository:
             "INSERT OR IGNORE INTO asset_tags (asset_id, tag, created_at) VALUES (?, ?, ?)",
             [(asset_id, tag, timestamp) for tag in tags],
         )
-        self.connection.commit()
-        return self.tags_for(tenant_id, asset_id)
-
-    def touch(self, tenant_id: str, asset_id: str) -> bool:
-        cursor = self.connection.execute(
+        self.connection.execute(
             "UPDATE assets SET updated_at = ? WHERE id = ? AND tenant_id = ?",
-            (now_iso(), asset_id, tenant_id),
+            (timestamp, asset_id, tenant_id),
         )
         self.connection.commit()
-        return cursor.rowcount > 0
+        return self.tags_for(tenant_id, asset_id)
 
     def declared_metadata(self, tenant_id: str, asset_id: str) -> sqlite3.Row | None:
         return self.connection.execute(
