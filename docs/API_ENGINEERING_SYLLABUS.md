@@ -231,6 +231,37 @@ Candidate cases: misleading `200` on failure, missing access check, partial-stat
 
 **Gate:** A reproducible failing-before/passing-after regression test, reviewed diff, and operational explanation.
 
+### Delivery — complete
+
+Delivered against the first sentence above: an **explicitly authorized reproduction**, written
+from scratch as `03-api-hardening/` (a multi-tenant asset registry) rather than code from a
+production system. The defects in it were seeded, not discovered in production. Full record:
+[`docs/evidence/project-3-completion.md`](evidence/project-3-completion.md).
+
+| PR | What it delivered |
+|---|---|
+| [#23](https://github.com/rlancaster243/api-engineering-lab/pull/23) `e873081` | The registry itself, with a green 38-test suite while four defects are present |
+| [#24](https://github.com/rlancaster243/api-engineering-lab/pull/24) `20eac5c` | Blind investigation of the escalated report; cross-tenant read fixed |
+| [#25](https://github.com/rlancaster243/api-engineering-lab/pull/25) `cb3b2b1` | Unplanted finding: `APP_ENV` fail-open closed |
+| [#26](https://github.com/rlancaster243/api-engineering-lab/pull/26) `67aae39` | Exception leak closed; no-op batch answers `207` |
+
+**Method — blind investigation.** [#24](https://github.com/rlancaster243/api-engineering-lab/pull/24)
+was run by a separate agent given only a user-visible symptom, with no file, line or hint and
+no access to the answer key that names the seeded defects. The trace, the reproduction, the
+isolation of the earliest divergence and the failing-before test are therefore reasoning under
+uncertainty rather than narration of a known answer. That is what the method establishes. It is
+**not** evidence of debugging production under time pressure — §14's "do not collapse these
+levels" governs, and the completion record states the limit explicitly. The strongest evidence
+in the phase is the defect nobody seeded: the `APP_ENV` fail-open default, which the
+investigator reported as an adjacent finding because it was reading the system, not following
+the report.
+
+**Gate met:** failing-before was reproduced on the parent commit (`assert 200 == 404` for the
+cross-tenant read, `assert 200 == 207` for the batch, `published key authenticated with 200`
+for `APP_ENV`), each fix was reviewed and merged, and each PR carries the operational
+explanation — blast radius, deployment consideration and rollback. Suite on `67aae39`: **53
+passed, zero skips.**
+
 ## 10. Eight-week action schedule
 
 | Week | Primary work | Demonstrable output |
@@ -274,19 +305,18 @@ Candidate cases: misleading `200` on failure, missing access check, partial-stat
 | ADR-005: PostgreSQL-backed job store | Accepted | [`0010-postgres-job-store.md`](decisions/0010-postgres-job-store.md) (Project 2) |
 | ADR-006: idempotency/recovery guarantee | Accepted | [`0011-job-idempotency.md`](decisions/0011-job-idempotency.md) (PR-2-04b) |
 | README roadmap alignment | Resolved | Root README & `01-rest-api/README.md` aligned with Project 1A/1B/3 |
-| Exact Project 3 source code | OPEN | Must be independently owned or authorized |
+| Exact Project 3 source code | Resolved — authorized reproduction | An explicitly authorized reproduction written for this portfolio inside `03-api-hardening/`, permitted by §9's first sentence. Not a copy of any production or proprietary implementation; defects seeded, not discovered. Delivery and PR list: §9 above; evidence: [completion record](evidence/project-3-completion.md) |
 
 ## 14. Evidence register and interview qualification gates
 
 For every milestone save the PR/commit, commands or CI results, tests that prove behavior, known limits, and independent-vs-assisted contribution.
 
-- [ ] Independently implement an HTTP endpoint. *(Project 1 `/v1/items`, `/ready`; evidence: PRs #3, #10.)*
 - [x] Explain status codes, validation, and pagination. *(Spec §4, `test_spec_contract.py`, ADR 0003/0007.)*
 - [x] Design correct keys, grain, and uniqueness. *(ADR 0002, integration tests.)*
 - [x] Run database migrations from a clean database. *(Alembic tests, CI postgres jobs.)*
 - [x] Demonstrate a rolled-back failed transaction. *(`test_persistence` / item tests.)*
-- [x] Enforce authentication and authorization. *(PR #8, ADR 0005.)*
-- [x] Prove two-user isolation. *(`test_isolation.py`.)*
+- [x] Enforce authentication and authorization. *(PR #8, ADR 0005. Project 3 adds tenant-level enforcement: `test_get_of_an_unowned_asset_is_not_found` in `03-api-hardening/tests/test_assets.py` — a foreign asset id answers `404 ASSET_NOT_FOUND` with the name and URI absent from the body; PR [#24](https://github.com/rlancaster243/api-engineering-lab/pull/24).)*
+- [x] Prove two-user isolation. *(`test_isolation.py`; Project 3: `test_lists_are_tenant_scoped` and `test_get_of_an_unowned_asset_is_not_found` in `03-api-hardening/tests/test_assets.py`, the second added by PR [#24](https://github.com/rlancaster243/api-engineering-lab/pull/24) after the cross-tenant read it pins.)*
 - [x] Implement and test durable idempotent job submission. *(`tests/test_idempotency.py` in `02-async-job-api/`, including the eight-thread one-key race; PR #20, [ADR 0011](decisions/0011-job-idempotency.md).)*
 - [x] Demonstrate safe concurrent worker claims. *(`test_two_concurrent_claimers_exactly_one_wins` in `tests/test_claims.py`; PR #16.)*
 - [x] Recover a job after worker crash. *(`test_crashed_worker_job_is_reclaimed_by_another_worker` in `tests/test_recovery.py`, which kills a real worker subprocess with `SIGKILL`; PR #17.)*
@@ -303,6 +333,12 @@ For every milestone save the PR/commit, commands or CI results, tests that prove
 - [x] **Project 2 PR-2-03:** retries with backoff, lease-expiry sweep and reclaim, real-crash recovery ([#17](https://github.com/rlancaster243/api-engineering-lab/pull/17)).
 - [x] **Project 2 PR-2-04a:** transactional outbox and reconciler for falsification case 4 ([#19](https://github.com/rlancaster243/api-engineering-lab/pull/19)).
 - [x] **Project 2 PR-2-04b:** `Idempotency-Key` submission semantics ([#20](https://github.com/rlancaster243/api-engineering-lab/pull/20)).
+- [x] **Project 2 PR-2-06:** lease heartbeat and the reconciler's live-lease guard ([#22](https://github.com/rlancaster243/api-engineering-lab/pull/22), `e5b3c84`).
+- [x] **Project 3 PR-3-00:** seed the asset registry and file ADR 0012 ([#23](https://github.com/rlancaster243/api-engineering-lab/pull/23), `e873081`).
+- [x] **Project 3 PR-3-01:** blind investigation and the cross-tenant read fix ([#24](https://github.com/rlancaster243/api-engineering-lab/pull/24), `20eac5c`).
+- [x] **Project 3 PR-3-02:** `APP_ENV` required, local mode decided once ([#25](https://github.com/rlancaster243/api-engineering-lab/pull/25), `cb3b2b1`).
+- [x] **Project 3 PR-3-03:** exception leak closed, no-op batch answers `207` ([#26](https://github.com/rlancaster243/api-engineering-lab/pull/26), `67aae39`).
+- [x] **Project 3 PR-3-04:** completion record, corrected Project 2 record, syllabus §9/§13/§14/§15 updates.
 - [x] Read current `README.md`, project directories, and CI configuration.
 - [x] Align the README's phase ownership/auth wording with this syllabus.
 - [x] Choose a small first feature branch, e.g. `feature/rest-api-foundation`.
@@ -312,6 +348,22 @@ For every milestone save the PR/commit, commands or CI results, tests that prove
 - [x] Open a PR with test evidence.
 - [x] Merge after required checks pass.
 
-**Next action (Project 3 blocker, not a code task):** settle *exact Project 3 source code — must be independently owned or authorized* (§13, still OPEN). `03-api-hardening/` is a scaffold with no target service, and §9 forbids copying proprietary third-party implementations, data, credentials or internal documentation. Pick and record the source before writing any Project 3 code: either a service written for this portfolio, or a sanitized reproduction with written authorization on file. Until that decision is made and recorded in §13, the honest next action is the decision itself.
+**Next action — no project blocker remains.** All three project directories are implemented and
+their evidence records are on `main`: [Project 1](evidence/project-1-completion.md),
+[Project 2](evidence/project-2-completion.md), [Project 3](evidence/project-3-completion.md).
+The §13 source-code question is resolved. What is left is not code:
+
+1. **D3 in `03-api-hardening/`** — the split tag/timestamp transaction, deliberately deferred.
+   Closing it moves the transaction boundary into the repository so both statements share one
+   commit, and inverts `tests/test_tags.py::test_tag_write_survives_a_failure_after_the_tag_rows_land`.
+   It is the one seeded defect still present, and it is a defensible next change rather than an
+   oversight: it is recoverable by retry today.
+2. **ADR 0012 is still Proposed.** Only the repository owner moves an ADR to Accepted; nothing
+   in the Project 3 work changes the SQLite persistence decision it records.
+3. **The §14 independent-implementation box stays unchecked** unless unaided work is actually
+   done. The exit condition below asks for "at least one substantial independently implemented
+   API"; that has not been claimed and cannot be met by further  work. It needs an
+   unaided exercise, recorded honestly — which is a qualification question for the owner, not a
+   backlog item an agent can close.
 
 **Exit condition:** Three verifiable engineering case studies, at least one substantial independently implemented API, reproducible tests and environment setup, and a defensible explanation of behavior, security, failure modes, and recovery.

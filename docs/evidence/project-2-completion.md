@@ -1,7 +1,7 @@
 # Project 2 completion record
 
 **Repository:** `02-async-job-api/` — async job API
-**Status:** Complete on `main`; PR-2-06 ([#22](https://github.com/rlancaster243/api-engineering-lab/pull/22)) adds the lease heartbeat and the reconciler's live-lease guard and is in review, not yet merged. All five syllabus §8 falsification cases are covered by tests that run in the default suite.
+**Status:** Complete on `main` at `e5b3c84`, which merges PR-2-06 ([#22](https://github.com/rlancaster243/api-engineering-lab/pull/22)) — the lease heartbeat and the reconciler's live-lease guard. All five syllabus §8 falsification cases are covered by tests that run in the default suite.
 
 ## Merged pull requests
 
@@ -14,10 +14,7 @@
 | [#18](https://github.com/rlancaster243/api-engineering-lab/pull/18) | CI fix: run checks on every pull request, not only those based on `main` (the stacked PRs were otherwise unchecked) |
 | [#19](https://github.com/rlancaster243/api-engineering-lab/pull/19) | Transactional outbox plus reconciler, so a reclaimed job does not repeat an external side effect (falsification case 4) |
 | [#20](https://github.com/rlancaster243/api-engineering-lab/pull/20) | `Idempotency-Key` on `POST /v1/jobs`: replay, `409` conflict, 255-character cap (ADR 0011) |
-
-Not merged: [#22](https://github.com/rlancaster243/api-engineering-lab/pull/22) adds the
-lease heartbeat (owner-scoped `RENEW_LEASE_SQL`) and the reconciler's live-lease guard.
-The tests and limitations below include it; the `main` merge commit does not.
+| [#22](https://github.com/rlancaster243/api-engineering-lab/pull/22) | Lease heartbeat (owner-scoped `RENEW_LEASE_SQL`) and the reconciler's live-lease guard, so a live-lease handler's `INTENT` row is never reconciled underneath it (`e5b3c84`) |
 
 ## ADRs accepted
 
@@ -55,9 +52,7 @@ its handler again; that is case 4's problem, and the two mechanisms are independ
 
 ## Verification record
 
-Commands, run on the PR-2-06 branch
-[`cursor/project-2-pr06-heartbeat-1856`](https://github.com/rlancaster243/api-engineering-lab/pull/22),
-which sits on `main`'s closing-docs merge `de6ffe0`:
+Commands, run in `02-async-job-api/` on `main` at `e5b3c84`, the merge of PR-2-06:
 
 ```bash
 cd 02-async-job-api
@@ -80,10 +75,11 @@ enforced by the run rather than observed by eye. The single warning is a
 `StarletteDeprecationWarning` about `httpx` from a FastAPI test-client import; it is
 not from this project's code.
 
-The count moves with each PR: 193 on `main` at `f016f30`, 209 on the PR-2-06 branch.
-Migrations run forward from an empty database through `0001` → `0006_job_idempotency`
-(`test_migration_upgrade_from_clean_database`, `test_migration_round_trip`); PR-2-06
-adds no migration.
+The count moves with each PR: 193 on `main` at `f016f30`, 209 from `e5b3c84` onward.
+The `209` was re-confirmed by the `postgres integration — 02-async-job-api` job on the
+current `main` head. Migrations run forward from an empty database through `0001` →
+`0006_job_idempotency` (`test_migration_upgrade_from_clean_database`,
+`test_migration_round_trip`); PR-2-06 adds no migration.
 
 ## Known limitations
 
@@ -122,7 +118,15 @@ adds no migration.
 - **`jobs.result` has no `jsonb_typeof(result) = 'object'` constraint.** The worker
   refuses to store a non-object and `GET` serves one as `null`, but the guarantee is
   in code, not in the schema; closing it needs a migration past `0006_job_idempotency`.
+- **One effect per `(job_id, effect_key)`.** A genuinely repeatable effect — a
+  per-attempt notification — needs an `effect_key` that includes the attempt, which
+  this slice does not model.
 - **No list endpoint and no auth.** Only `echo` and `notify` handlers exist.
+- **The logs carry no payload, result, handler error message or traceback.** Worker
+  failures are recorded as `error_class` plus `last_error_chars` (the length of the
+  stored message), and the HTTP error handlers log stack frames and SQLSTATE but never
+  an exception's message, because psycopg's `DETAIL:` line quotes the submitted row.
+  A failure is therefore diagnosable by call site, not by value.
 
 This is a lab system. It is not production-ready, and it does not claim exactly-once
 delivery.
