@@ -22,12 +22,15 @@ def test_ready_is_unavailable_when_the_file_cannot_be_opened(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def refuse(path: str) -> sqlite3.Connection:
-        raise sqlite3.OperationalError("unable to open database file")
+        raise sqlite3.OperationalError("unable to open database file: /srv/private/registry")
 
     monkeypatch.setattr("app.main.connect", refuse)
     response = client.get("/ready")
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "SERVICE_UNAVAILABLE"
+    # A probe body lands in orchestration logs, so it says nothing about the path.
+    assert response.json()["error"]["message"] == "The service is temporarily unavailable."
+    assert "/srv/private" not in response.text
 
 
 def test_health_does_not_touch_storage(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
