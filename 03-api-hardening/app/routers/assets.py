@@ -56,5 +56,14 @@ def add_tags(asset_id: str, body: TagCreate, registry: Registry) -> AssetDetail:
 
 
 @batch_router.post("/reprocess", response_model=BatchSummary)
-def reprocess_batch(body: BatchCreate, registry: Registry) -> BatchSummary:
-    return registry.reprocess(body.ids)
+def reprocess_batch(body: BatchCreate, registry: Registry, response: Response) -> BatchSummary:
+    summary = registry.reprocess(body.ids)
+    # 207 Multi-Status when no item was processed and at least one failed. Deliberately not
+    # 503: the request was well formed and the server is healthy, so 503 would name an
+    # outage that is not happening and invite a retry that fails identically. It is also
+    # not an ApiError, because ApiError has no details channel and raising would discard
+    # the per-item `results` that tell the caller why each id failed. Partial and full
+    # success stay 200; the per-item detail carries any failure either way.
+    if summary.processed == 0 and summary.failed:
+        response.status_code = 207
+    return summary
