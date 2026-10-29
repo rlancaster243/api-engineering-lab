@@ -142,9 +142,10 @@ BUSY_MARKERS = ("locked", "busy")
 
 async def _handle_database_error(request: Request, exc: Exception) -> JSONResponse:
     assert isinstance(exc, sqlite3.Error)
-    # Only contention is transient. Any other storage error is a fault, and the text of a
-    # storage error is the only diagnostic available without host access, so it is
-    # returned to the caller rather than reduced to a fixed message.
+    # Only contention is transient, and only it is reported as such. Any other storage
+    # error is a fault and goes to the fixed INTERNAL_ERROR message; the driver's text is
+    # logged with the request id, never returned, because it names schema and host layout
+    # and the caller is not the operator.
     if isinstance(exc, sqlite3.OperationalError) and any(
         marker in str(exc) for marker in BUSY_MARKERS
     ):
@@ -155,7 +156,7 @@ async def _handle_database_error(request: Request, exc: Exception) -> JSONRespon
 
 def _unexpected(request: Request, exc: BaseException) -> JSONResponse:
     logger.error("unhandled exception request_id=%s", _request_id(request), exc_info=exc)
-    return error_response(request, ErrorCode.INTERNAL_ERROR, message=str(exc) or None)
+    return error_response(request, ErrorCode.INTERNAL_ERROR)
 
 
 async def _handle_unexpected(request: Request, exc: Exception) -> JSONResponse:
