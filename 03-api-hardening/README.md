@@ -28,7 +28,7 @@ since an orchestrator has no credential to present.
 
 ```
 app/main.py        application object, lifespan, probes
-app/config.py      environment -> Settings, failing closed in production
+app/config.py      environment -> Settings, failing closed without APP_ENV or DATABASE_PATH
 app/db.py          connection per request, schema
 app/auth.py        X-API-Key -> Tenant
 app/errors.py      the error envelope and its handlers
@@ -57,11 +57,18 @@ failures name the offending field and never echo the submitted value.
 ```bash
 cp .env.example .env
 uv sync --locked --extra dev
+set -a && . ./.env && set +a    # APP_ENV and DATABASE_PATH must reach the process
 uv run uvicorn app.main:app --reload --port 8003
 ```
 
-`APP_ENV=local` seeds two documentation tenants, so the service is usable with `curl`
-without a setup step:
+`APP_ENV` is required and has no default: without it the service refuses to start.
+Copying `.env` is not enough on its own — uvicorn only reads that file when passed
+`--env-file .env`, so either use the `set -a && . ./.env && set +a` line above or run
+`uv run uvicorn app.main:app --reload --port 8003 --env-file .env`.
+
+`APP_ENV` must be one of `local`, `test` or `production`; any other value also stops
+startup. `APP_ENV=local` seeds two documentation tenants, so the service is usable with
+`curl` without a setup step:
 
 ```bash
 curl -s http://127.0.0.1:8003/health
@@ -88,8 +95,12 @@ curl -s -X POST http://127.0.0.1:8003/v1/batch/reprocess \
 curl -s "http://127.0.0.1:8003/v1/assets" -H 'X-API-Key: local-dev-key-beta' | jq .
 ```
 
-The seeded keys exist only for `APP_ENV=local` and `APP_ENV=test`. In any other
-environment `DATABASE_PATH` is required and no tenant is seeded.
+The seeded keys exist only for `APP_ENV=local` and `APP_ENV=test`, and they are published
+here, so they are not credentials: anything that reaches `local-dev-key-alpha` has no
+authentication in front of it. In any other environment `DATABASE_PATH` is required, no
+tenant is seeded, and both keys are a `401`. Because `APP_ENV` has no default, a
+deployment that sets `DATABASE_PATH` for real but forgets `APP_ENV` stops at startup
+instead of silently seeding them.
 
 ## Test
 
@@ -107,7 +118,7 @@ tests exercise the real schema, the real constraints and the real commit boundar
 | Variable | Default | Purpose |
 |---|---|---|
 | `DATABASE_PATH` | `var/assets.sqlite3` in `local`/`test`, required otherwise | SQLite file |
-| `APP_ENV` | `local` | `local`/`test` enable the sample tenants |
+| `APP_ENV` | none — startup fails if unset | `local`/`test` enable the sample tenants; `production` disables them. Any other value fails startup |
 
 ## Persistence choice
 

@@ -7,7 +7,7 @@ from fastapi import FastAPI, Request
 from pydantic import BaseModel
 
 from app.auth import local_env, seed_local_tenants
-from app.config import load_settings
+from app.config import Settings, load_settings
 from app.db import connect, initialize
 from app.errors import ApiError, ErrorCode, install_error_handling
 from app.routers.assets import batch_router
@@ -22,14 +22,15 @@ class ReadyResponse(BaseModel):
     status: str
 
 
-def prepare_database(database_path: str) -> None:
+def prepare_database(settings: Settings) -> None:
     """Create the schema and, in local development, the documentation tenants."""
+    database_path = settings.database_path
     if database_path != ":memory:":
         Path(database_path).parent.mkdir(parents=True, exist_ok=True)
     connection = connect(database_path)
     try:
         initialize(connection)
-        if local_env():
+        if local_env(settings):
             seed_local_tenants(connection)
     finally:
         connection.close()
@@ -37,11 +38,12 @@ def prepare_database(database_path: str) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    # Fail closed: a deployment without a database path stops here rather than
-    # creating a file next to the process working directory. Opening a connection does
-    # not read a row, so /health stays a liveness check that does not depend on data.
+    # Fail closed: a deployment without APP_ENV or a database path stops here rather
+    # than defaulting to local mode (which seeds tenants whose keys are in the README)
+    # or creating a file next to the process working directory. Opening a connection
+    # does not read a row, so /health stays a liveness check that does not depend on data.
     settings = load_settings()
-    prepare_database(settings.database_path)
+    prepare_database(settings)
     app.state.settings = settings
     yield
 
