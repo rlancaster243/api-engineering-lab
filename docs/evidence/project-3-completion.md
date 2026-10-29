@@ -623,6 +623,7 @@ does not make anywhere. In particular:
 - The investigation is evidence of debugging under uncertainty **on a purpose-built service**.
   It is not evidence of production debugging, and §14's "do not collapse these levels" is the
   reason that distinction is written down rather than glossed.
-- No claim of independent implementation is made for any part of this phase. The syllabus §14
-  checkbox for independently implementing an HTTP endpoint **stays unchecked**, because all
-  work here is AI-assisted and checking it would be false.
+- The syllabus §14 gate for **implementing an HTTP endpoint** is **checked** (owner decision
+  2026-10-29: implementation counts; unaided delivery is not required). AI assistance is
+  disclosed throughout this record and in Project 1–3 evidence; do not read the checked box as
+  a claim of independent implementation.
