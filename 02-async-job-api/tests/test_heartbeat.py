@@ -28,7 +28,7 @@ import json
 import threading
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any
 
 import pytest
@@ -125,6 +125,39 @@ def read_effect(engine: Engine, job_id: uuid.UUID, effect_key: str = "notify") -
         ).one_or_none()
 
 
+def wait_until(predicate: Callable[[], bool], *, message: str, timeout: float = 15.0) -> None:
+    """Poll ``predicate`` until it holds, and fail with ``message`` if it never does.
+
+    Used where the point to observe is a value that changes in another thread — a
+    lease written by the heartbeat, a row written by a second worker — rather than a
+    single event that can be waited on directly. Polling a value is still an
+    observation of the thing itself, so a slow machine only prolongs the wait; it
+    cannot turn a real failure into a pass, which is the defect of sleeping for a
+    fixed time and then asserting. The interval is short relative to the smallest
+    lease so a passing test does not sit waiting on its poll.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.01)
+    pytest.fail(message)
+
+
+def lease_seconds_remaining(engine: Engine, job_id: uuid.UUID) -> float | None:
+    """How long the job's lease has left, measured entirely on the database clock.
+
+    Both sides of the subtraction are ``now()`` on the server, so a skewed host clock
+    cannot make a live lease look dead or the reverse. ``None`` when the row holds no
+    lease at all.
+    """
+    with engine.connect() as conn:
+        return conn.execute(
+            text("SELECT extract(epoch FROM lease_expires_at - now()) FROM jobs WHERE id = :id"),
+            {"id": job_id},
+        ).scalar_one_or_none()
+
+
 def seed_effect(engine: Engine, *, job_id: uuid.UUID, effect_key: str = "notify", age: int) -> None:
     with engine.connect() as conn:
         conn.execute(
@@ -196,35 +229,29 @@ def test_long_handler_is_not_reclaimed_and_completes_once(
 ) -> None:
     """A handler that outlives ``LEASE_SECONDS`` keeps its job.
 
-    Kills two mutations. "Never start the renewal thread": the lease then expires
+    Kills the "never start the renewal thread" mutation: the lease then expires
     mid-handler, the second worker's reclaim probe takes the row, the handler runs a
-    second time and the first worker's completion is refused. "Renew at the full
-    lease instead of a third": the first renewal lands at exactly the lease, which is
-    too late — the reclaim probe at 2.5s still finds an expired row.
+    second time and the first worker's completion is refused.
 
-    The handler blocks on an ``Event`` rather than sleeping, so the second worker is
-    guaranteed to probe while the handler is still running, and the mid-handler
-    snapshot is taken while the handler is provably alive. The one real wait is the
-    deliberate one past the lease: the probe has to land *after* the claim's lease
-    would have expired, which is one second of wall clock by definition.
+    The "renew at the full lease instead of a third" mutation is not killed here
+    anymore. This test used to enforce cadence by sleeping 2.5s and requiring three
+    renewals within half a lease — a punctuality check that failed on throttled
+    runners even when the heartbeat was healthy (for example renewals 1.29s apart or
+    only one renewal in the window). The renewal-interval ratio is pinned without
+    timing by ``test_renewal_interval_is_a_third_of_the_lease``, which fails on that
+    mutation. This test now asserts only what it exists for: while the handler is
+    provably alive and its lease is live on the database clock, a second worker cannot
+    take the job.
+
+    The wait is event-based — ``wait_until`` returns as soon as the row moves — so a
+    late first renewal costs a longer wait and nothing else. ``LEASE_SECONDS`` of
+    wall clock per attempt is still unavoidable in one place: a *starved* heartbeat
+    that never renews at all can only be detected by waiting out the lease.
     """
     job_id = seed_job(migrated_engine, job_type="slow", payload={"x": 1}, max_attempts=3)
     entered = threading.Event()
     release = threading.Event()
     executions: list[str] = []
-    renewal_times: list[float] = []
-    real_renew = repository.renew_lease
-
-    def _spy_renew(
-        session: Session, *, job_id: uuid.UUID, worker_id: str, lease_seconds: int
-    ) -> bool:
-        renewed = real_renew(
-            session, job_id=job_id, worker_id=worker_id, lease_seconds=lease_seconds
-        )
-        renewal_times.append(time.monotonic())
-        return renewed
-
-    monkeypatch.setattr(repository, "renew_lease", _spy_renew)
 
     def _slow(_payload: dict, _context: handlers.HandlerContext) -> dict:
         executions.append("run")
@@ -252,31 +279,35 @@ def test_long_handler_is_not_reclaimed_and_completes_once(
         claimed_at = read_job(migrated_engine, job_id)
         assert claimed_at.lease_expires_at is not None
 
-        # Well past the original claim's lease, and past several renewal ticks.
-        time.sleep(2.5)
+        def _lease_pushed_past_claim() -> bool:
+            return read_job(migrated_engine, job_id).lease_expires_at > claimed_at.lease_expires_at
 
+        # The heartbeat's whole job, observed on the row it writes. A heartbeat that
+        # never started fails here by timing out; one that is merely late only makes
+        # the wait longer.
+        wait_until(
+            _lease_pushed_past_claim,
+            message="the lease was never pushed past the claim's expiry",
+            timeout=LEASE_SECONDS * 5,
+        )
+
+        # In time, not merely eventually, but judged on the row rather than on when a
+        # renewal tick happened to land. A renewal that commits at or after the claim's
+        # expiry leaves a window in which another worker could reclaim the row, which
+        # is the failure the heartbeat exists to prevent.
         mid_flight = read_job(migrated_engine, job_id)
         assert mid_flight.status == "RUNNING"
         assert mid_flight.lease_owner == "worker-a"
         assert mid_flight.attempt == 1, "the job was reclaimed while its handler was alive"
-        assert mid_flight.lease_expires_at > claimed_at.lease_expires_at, (
-            "the lease was never pushed forward, so the job only survived by luck"
-        )
 
-        # The cadence, not just the fact of renewing. A third of the lease gives ~7
-        # renewals in 2.5s; renewing once per lease gives 2, and the lease is expired
-        # for most of that interval. Asserting the gap is what pins the ratio.
-        assert len(renewal_times) >= 3, (
-            f"only {len(renewal_times)} renewal(s) in 2.5s at a {LEASE_SECONDS}s lease; "
-            "the interval is not a third of the lease"
-        )
-        gaps = [
-            later - earlier
-            for earlier, later in zip(renewal_times, renewal_times[1:], strict=False)
-        ]
-        assert max(gaps) < LEASE_SECONDS / 2, (
-            f"renewals were {max(gaps):.2f}s apart on a {LEASE_SECONDS}s lease; "
-            "the interval is not a third of the lease"
+        # The precondition for the probe below, asserted rather than assumed: a live
+        # lease is what the second worker must respect. If this fails the process was
+        # starved for longer than the whole lease — a property of the *runner*, not of
+        # the heartbeat, which this test cannot and should not paper over. Saying so
+        # here keeps the next assertion from being misread as a heartbeat bug.
+        assert lease_seconds_remaining(migrated_engine, job_id) > LEASE_SECONDS / 2, (
+            "the lease had run out before the reclaim probe could run; the process was "
+            "starved for longer than LEASE_SECONDS, so there was no live lease to respect"
         )
 
         worker_b = Worker(
@@ -674,29 +705,53 @@ def test_a_failing_renewal_is_logged_by_class_and_the_heartbeat_continues(
     connection, so the heartbeat's own session/commit path still runs: the test is
     about what the worker does with the exception, not about reproducing a dead
     database.
+
+    The property is ordering, not cadence: a renewal that raises is followed by
+    another renewal *attempt*. The handler waits for the event the second attempt
+    sets, so a heartbeat that died on the first error fails the test by never setting
+    it, while a heartbeat that merely ticked late still passes. The earlier form
+    slept 1.2s and required three attempts inside that window — a 333ms interval with
+    only ~200ms of slack — and failed on a throttled runner with two attempts from a
+    loop that was alive and simply stalled, which is not the behaviour under test.
     """
     secret = "lease-renew-secret-4d21"
     job_id = seed_job(migrated_engine, job_type="survives-renewal-error", payload={})
-    attempts: list[int] = []
+    attempt_outcomes: list[str] = []
+    first_raised = threading.Event()
+    second_attempt_started = threading.Event()
     real_renew = repository.renew_lease
 
     def _flaky_renew(
         session: Session, *, job_id: uuid.UUID, worker_id: str, lease_seconds: int
     ) -> bool:
-        attempts.append(1)
-        if len(attempts) == 1:
+        if not attempt_outcomes:
+            attempt_outcomes.append("raised")
+            first_raised.set()
             raise RuntimeError(f"connection dropped while renewing {secret}")
-        return real_renew(session, job_id=job_id, worker_id=worker_id, lease_seconds=lease_seconds)
+        # Recorded as the attempt begins, not as it returns, so a renewal that is
+        # still in flight when the handler returns still counts as the loop having
+        # gone round again.
+        second_attempt_started.set()
+        renewed = real_renew(
+            session, job_id=job_id, worker_id=worker_id, lease_seconds=lease_seconds
+        )
+        attempt_outcomes.append("renewed" if renewed else "lost")
+        return renewed
 
     monkeypatch.setattr(repository, "renew_lease", _flaky_renew)
 
-    def _slow(_payload: dict, _context: handlers.HandlerContext) -> dict:
-        # Three renewal ticks at lease/3, so a heartbeat that died on the first
-        # error is observable.
-        time.sleep(1.2)
+    def _waits_out_one_failed_renewal(_payload: dict, _context: handlers.HandlerContext) -> dict:
+        # The handler stays alive until the heartbeat has attempted a renewal after
+        # the one that raised. Returning earlier would make ``stop`` join the thread
+        # before the second tick, and the test would be observing its own shutdown
+        # rather than the loop's willingness to continue.
+        assert first_raised.wait(timeout=15), "the heartbeat never renewed"
+        assert second_attempt_started.wait(timeout=15), (
+            "the heartbeat stopped after a renewal raised"
+        )
         return {"done": True}
 
-    monkeypatch.setitem(handlers.HANDLERS, "survives-renewal-error", _slow)
+    monkeypatch.setitem(handlers.HANDLERS, "survives-renewal-error", _waits_out_one_failed_renewal)
 
     logger = configure_logging(log_stream)
     worker = Worker(
@@ -723,8 +778,15 @@ def test_a_failing_renewal_is_logged_by_class_and_the_heartbeat_continues(
         "a failing renewal must not log a traceback"
     )
 
-    assert len(attempts) >= 3, (
-        f"the heartbeat stopped after a renewal raised: {len(attempts)} attempt(s) in 1.2s"
+    assert attempt_outcomes[0] == "raised", "the first renewal attempt did not raise"
+    assert len(attempt_outcomes) >= 2, (
+        f"the heartbeat stopped after a renewal raised: {len(attempt_outcomes)} attempt(s)"
+    )
+    # The attempt after the raise got through to a real renewal. That is the property
+    # the count was standing in for, and it cannot be satisfied by a loop that only
+    # retried a stubbed path.
+    assert attempt_outcomes[1] != "raised", (
+        f"the renewal after the raise failed too: {attempt_outcomes}"
     )
     row = read_job(migrated_engine, job_id)
     assert row.status == "SUCCEEDED", "a failing renewal cost the job"
@@ -783,6 +845,28 @@ def test_heartbeating_handler_past_the_grace_window_applies_exactly_once(
         )
         probe_results.append(worker_b.run_once())
 
+    def _await_live_lease() -> None:
+        """Wait until the job's lease is live with enough of it left to be checked.
+
+        The point of this test is a handler whose lease is *alive* when the
+        reconciler looks at its effect. A renewal that is still in flight, or one that
+        is due in a few milliseconds, would leave the lease expired by the time the
+        reconciler's statement evaluates ``lease_expires_at > now()`` — and the guard
+        would then be correctly skipped while the test failed on a healthy heartbeat.
+        So wait for the row to show a lease with more than half of it still to run.
+        Both sides of that comparison are the database's clock, so a skewed host clock
+        cannot make a live lease look dead.
+        """
+        wait_until(
+            _lease_is_comfortably_live,
+            message="the job's lease never became comfortably live before the probe",
+            timeout=LEASE_SECONDS * 5,
+        )
+
+    def _lease_is_comfortably_live() -> bool:
+        remaining = lease_seconds_remaining(migrated_engine, job_id)
+        return remaining is not None and remaining > LEASE_SECONDS / 2
+
     def _slow_notify(_payload: dict, context: handlers.HandlerContext) -> dict:
         key = "notify"
         detail = {"k": 1}
@@ -794,8 +878,17 @@ def test_heartbeating_handler_past_the_grace_window_applies_exactly_once(
         if not claimed:
             return {"skipped": True}
 
-        # Outlive the grace window while the heartbeat keeps the lease alive.
+        # Outlive the grace window while the heartbeat keeps the lease alive. The
+        # effect row is only a candidate once it is older than the grace window, so
+        # that age is wall clock that cannot be shortened — but the *lease* surviving
+        # it is observed rather than assumed: waiting for a single renewal at lease/3
+        # is not enough on its own, because grace plus one stall between renewals can
+        # exceed a 1s lease. The probe is therefore held until the row shows more than
+        # half a lease left, so the guard that follows is exercised against a lease
+        # that is provably live at that instant rather than one that was live when the
+        # effect was claimed.
         time.sleep(GRACE_SECONDS + 0.4)
+        _await_live_lease()
         _probe()
 
         context.apply_effect(context.job_id, key, detail)
@@ -973,8 +1066,16 @@ def test_effect_lock_does_not_block_a_concurrent_heartbeat(
 
     ``lease_owner`` is the owner passed as ``worker_id``, and the result is asserted
     ``True``, so a renewal that matched zero rows cannot pass this for the wrong
-    reason. The holder waits up to five seconds for the renewal, so a blocked
-    heartbeat shows up as a slow one rather than as a hung test.
+    reason.
+
+    Blocking is observed, not timed. The holder refuses to roll back — and so keeps
+    the effect lock — until the renewal has committed, and the renewal runs inside
+    ``renew_lease``'s own 500ms ``lock_timeout``. A bare ``FOR UPDATE`` therefore
+    cannot produce a pass: the renewal is held behind the lock, hits ``55P03``, and
+    surfaces as an error from ``run_concurrently`` with ``renewed`` empty. The earlier
+    form additionally asserted the renewal finished in under 2.0s, which failed on a
+    throttled runner with a renewal that was never blocked (measured: 2.20s) and added
+    nothing to the block/no-block decision, which the error already settles.
     """
     owner = "worker-dead"
     job_id = seed_job(migrated_engine, job_type="echo")
@@ -1027,10 +1128,6 @@ def test_effect_lock_does_not_block_a_concurrent_heartbeat(
     assert errors == [None, None], f"a participant raised {errors}"
     assert renewed == [True], "the renewal matched no row, so the lock was never exercised"
     assert elapsed, "the heartbeat never ran"
-    assert elapsed[0] < 2.0, (
-        f"the heartbeat waited {elapsed[0]:.2f}s behind the effect lock; "
-        "the lock covers the jobs row as well as the effect row"
-    )
 
     row = read_job(migrated_engine, job_id)
     assert row.lease_expires_at is not None
