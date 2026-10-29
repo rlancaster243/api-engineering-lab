@@ -58,9 +58,28 @@ reached the investigator.
 the earliest divergence, the failing-before test and the rejection of the plausible
 Python-side fix were all produced under uncertainty. The investigator did not know where the
 fault was while looking for it, and that is the property that makes the trace evidence of
-skill rather than narration of a disclosed answer. The near miss was live too: the answer key
-predicts that filtering in Python after loading the row would pass a naive test, and the
-investigator named and rejected that shape on mechanism grounds before writing the fix.
+skill rather than narration of a disclosed answer.
+
+One claim in this section needed correcting, and the correction is more useful than the
+original would have been. An earlier draft repeated, from its own source material, the answer
+key's prediction that adding `row["tenant_id"] != self.tenant_id` to `AssetRegistry.get` after
+`get_by_id` returns would pass a naive `404` test — a near miss only the mechanism argument
+would catch. **That prediction is wrong.** Applied alone to the unfixed tree, the filter raises
+`IndexError: No item with that key`, because `ASSET_COLUMNS` does not select `tenant_id`, so
+the row has no such key to compare. It passes only once `tenant_id` is *also* added to the
+select list — and at that point `repository.get_by_id` still returns the foreign row, which is
+the actual reason the approach is wrong: the unsafe query stays reachable and the boundary is
+still decided in Python, after the row has been lifted into the process. The near miss is
+therefore narrower than the key documented, and it was never a trap a test would have sprung.
+The investigator rejected the shape on mechanism grounds without relying on a test outcome —
+correct reasoning either way, and it is the reasoning that is credited here, not a trap that
+was not there.
+
+That correction belongs in the record. The repository owner's independent verification, not
+this document, found and corrected the error in the answer key: the claim was tested against
+the code and disproved before it was written down as fact. A completion record that quietly
+repeats its own input is worth less than one that shows a claim was tested and where it turned
+out to be wrong.
 
 **What it does not demonstrate.** It is not evidence of finding defects in production, under
 time pressure, with incomplete information, on a system nobody wrote an answer key for. There
@@ -154,10 +173,14 @@ first point where expected and actual differ is the `WHERE` clause of the single
 `app/repository.py`, which returns a row for an id the caller does not own. Everything
 downstream is faithful handling of the wrong row set. That is why the fix belongs in the
 statement and not in the service: a Python-side `tenant_id` comparison after the load would
-have turned the test green while leaving the unsafe query reachable from every future caller,
-which is the shape the repository docstring explicitly claims not to use — "which rows a
-caller can reach is decided by the database rather than by a comparison in Python after a row
-has already been loaded into the process."
+leave the unsafe query reachable from every future caller, which is the shape the repository
+docstring explicitly claims not to use — "which rows a caller can reach is decided by the
+database rather than by a comparison in Python after a row has already been loaded into the
+process." (That filter would not have worked as first proposed: it raises `IndexError`, not
+`404`. See the correction in
+[What the investigation demonstrates](#what-the-investigation-demonstrates--and-what-it-does-not).
+It needs `tenant_id` added to the select list before it can compare anything, which is a second
+change — and it still leaves `get_by_id` returning the foreign row.)
 
 ### Failing before
 
