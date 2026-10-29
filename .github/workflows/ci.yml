@@ -20,10 +20,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        project:
-          - 01-rest-api
-          - 02-async-job-api
-          - 03-api-hardening
+        include:
+          - project: 01-rest-api
+          - project: 02-async-job-api
+          - project: 03-api-hardening
+            app_env: test
+    env:
+      APP_ENV: ${{ matrix.app_env || '' }}
     defaults:
       run:
         working-directory: ${{ matrix.project }}

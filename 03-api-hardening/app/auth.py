@@ -7,13 +7,13 @@ every route except the probes.
 """
 
 import hashlib
-import os
 import sqlite3
 from dataclasses import dataclass
 from typing import Annotated
 
 from fastapi import Depends, Request
 
+from app.config import LOCAL_ENVS, Settings
 from app.db import get_connection
 from app.errors import ApiError, ErrorCode
 
@@ -78,5 +78,11 @@ def current_tenant(
 CurrentTenant = Annotated[Tenant, Depends(current_tenant)]
 
 
-def local_env() -> bool:
-    return os.environ.get("APP_ENV", "local").strip() in ("local", "test")
+def local_env(settings: Settings) -> bool:
+    """Whether the seeded documentation tenants belong in this environment.
+
+    Takes the already-loaded ``Settings`` rather than reading ``os.environ`` again: the
+    environment is interpreted once, at startup, so this answer cannot contradict the
+    configuration the rest of the process is using.
+    """
+    return settings.app_env in LOCAL_ENVS
