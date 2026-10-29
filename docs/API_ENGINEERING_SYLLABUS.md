@@ -355,7 +355,7 @@ their evidence records are on `main`: [Project 1](evidence/project-1-completion.
 The §13 source-code question is resolved. What is left is not code:
 
 1. ~~**D3 in `03-api-hardening/`** — the split tag/timestamp transaction, deliberately deferred.~~
-   **Closed** in `bd957ef` ([#28](https://github.com/rlancaster243/api-engineering-lab/pull/28)):
+   **Closed** ([#28](https://github.com/rlancaster243/api-engineering-lab/pull/28)):
    the transaction boundary moved into `AssetRepository.add_tags`, so the tag rows and the
    parent's `updated_at` share one commit, and
    `test_tag_write_survives_a_failure_after_the_tag_rows_land` was inverted into

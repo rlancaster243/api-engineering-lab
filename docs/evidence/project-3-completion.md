@@ -1,16 +1,14 @@
 # Project 3 completion record
 
 **Repository:** `03-api-hardening/` — multi-tenant asset registry
-**Status:** Complete on `main` at `67aae39`. The investigation fixed one planted defect
-([#24](https://github.com/rlancaster243/api-engineering-lab/pull/24), `20eac5c`), one defect
-nobody planted ([#25](https://github.com/rlancaster243/api-engineering-lab/pull/25),
-`cb3b2b1`), two adjacent defects in
-[#26](https://github.com/rlancaster243/api-engineering-lab/pull/26), `67aae39`, and the split
-tag/timestamp transaction in [#28](https://github.com/rlancaster243/api-engineering-lab/pull/28)
-(`bd957ef`, open for review when this was written — the only PR in the table that is not yet
-merged). The suite is 53 passed, zero skips. **No seeded defect remains in
-`03-api-hardening/`**; the known limitations that remain are design scope, not defects, and
-are listed [below](#known-limitations).
+**Status:** Complete. The investigation fixed one planted defect
+([#24](https://github.com/rlancaster243/api-engineering-lab/pull/24)), one defect nobody
+planted ([#25](https://github.com/rlancaster243/api-engineering-lab/pull/25)), two adjacent
+defects in [#26](https://github.com/rlancaster243/api-engineering-lab/pull/26), and the split
+tag/timestamp transaction in
+[#28](https://github.com/rlancaster243/api-engineering-lab/pull/28). The suite is 53 passed,
+zero skips. **No seeded defect remains in `03-api-hardening/`**; the known limitations that
+remain are design scope, not defects, and are listed [below](#known-limitations).
 
 ## What the module is
 
@@ -29,7 +27,9 @@ published in it. The §13 decision that selected this route is recorded in the s
 
 ## Pull requests
 
-Merged to `main` unless the row says otherwise.
+The PRs that delivered this module. The commit column names the commit that carried each
+change on `main`; it is left blank where that commit only exists once the PR merges. Each link
+renders its own merge state, so this table does not restate it.
 
 | PR | Commit | Scope |
 |----|--------|-------|
@@ -37,11 +37,10 @@ Merged to `main` unless the row says otherwise.
 | [#24](https://github.com/rlancaster243/api-engineering-lab/pull/24) | `20eac5c` | Blind investigation of the escalated report: tenant predicate added to `get_by_id` and `tags_for`, regression test added |
 | [#25](https://github.com/rlancaster243/api-engineering-lab/pull/25) | `cb3b2b1` | The unplanted finding: `APP_ENV` required, no default anywhere, local mode decided once from the loaded `Settings` |
 | [#26](https://github.com/rlancaster243/api-engineering-lab/pull/26) | `67aae39` | D2 exception leak closed, D4 no-op batch answers `207`, README corrected, D3 deferred as a known limitation |
-| [#28](https://github.com/rlancaster243/api-engineering-lab/pull/28) | `bd957ef` | **Open for review** at the time of writing. D3 closed: the parent's `updated_at` moves inside `AssetRepository.add_tags`'s single commit, `touch` removed, the test that pinned the split write inverted |
+| [#28](https://github.com/rlancaster243/api-engineering-lab/pull/28) | — | D3 closed: the parent's `updated_at` moves inside `AssetRepository.add_tags`'s single commit, `touch` removed, the test that pinned the split write inverted |
 
-Test counts move with each commit, measured on this tree: **38** at `e873081`, **39** at
-`20eac5c`, **51** at `cb3b2b1`, **53** at `67aae39`, **53** at `bd957ef` (one test inverted,
-one added).
+Test counts move with each change, measured on this tree: **38** after #23, **39** after #24,
+**51** after #25, **53** after #26, and **53** after #28 (one test inverted, one added).
 
 ## What the investigation demonstrates — and what it does not
 
@@ -353,8 +352,8 @@ underway to reach. It is the strongest evidence in the phase, not unlimited evid
 
 ## The follow-up fixes
 
-D2 and D4 both in `67aae39` ([#26](https://github.com/rlancaster243/api-engineering-lab/pull/26));
-D3 in `bd957ef` ([#28](https://github.com/rlancaster243/api-engineering-lab/pull/28)).
+D2 and D4 both in [#26](https://github.com/rlancaster243/api-engineering-lab/pull/26); D3 in
+[#28](https://github.com/rlancaster243/api-engineering-lab/pull/28).
 
 ### D2 — exception text reached the client
 
@@ -502,7 +501,7 @@ stays `200`), `test_unknown_app_env_is_rejected`, `test_production_startup_seeds
 
 ## Verification record
 
-On `main` at `67aae39`, in `03-api-hardening/`:
+The tree before D3 was closed, at `67aae39`, in `03-api-hardening/`:
 
 ```bash
 uv sync --locked --extra dev
@@ -538,9 +537,9 @@ row locking, serialization failure or `READ COMMITTED` visibility. **§14 eviden
 phase stops at "tested on SQLite".** It is not PostgreSQL transaction evidence, and nothing
 in the D3 fix should be read as a PostgreSQL locking finding.
 
-### D3 — closed in `bd957ef` ([#28](https://github.com/rlancaster243/api-engineering-lab/pull/28))
+### D3 — closed in [#28](https://github.com/rlancaster243/api-engineering-lab/pull/28)
 
-On `bd957ef`, in `03-api-hardening/`:
+Measured on the #28 branch head, in `03-api-hardening/`:
 
 ```bash
 uv sync --locked --extra dev
@@ -557,17 +556,17 @@ All checks passed!
 
 The count is unchanged because the fix inverted one test and added one. `-rs` reports no skip
 lines; the single warning is the same `fastapi.testclient` deprecation. Confirmed
-independently in CI on `bd957ef` (`lint & pytest — 03-api-hardening`):
+independently in CI on the same branch head (`lint & pytest — 03-api-hardening`):
 `53 passed, 1 warning in 1.20s`, with `All checks passed!` and `20 files already formatted`
 from the Ruff step.
 
-Failing-before for D3, on the unmodified `67aae39` tree with the new test added:
+Failing-before for D3, on the pre-fix app code with the new test added:
 
 ```text
 >       assert stored_tags(connection, created["id"]) == []
 E       AssertionError: assert ['finance'] == []
-tests/test_tags.py:67: AssertionError
-1 failed, 1 warning in 0.09s
+tests/test_tags.py:61: AssertionError
+1 failed, 1 warning in 0.08s
 ```
 
 The request answered `500 INTERNAL_ERROR` and the tag row existed anyway. The test drives the
@@ -581,9 +580,10 @@ restored, `53 passed`.
 ## Known limitations
 
 Mirrored from the current `03-api-hardening/README.md`, which is authoritative if the two
-disagree. **No seeded defect remains**: D3 was the last one and it is closed under
-[D3 — closed](#d3--closed-in-bd957ef-28) above. Everything below is design scope rather than
-a defect.
+disagree. **No seeded defect remains**: D3 was the last one and it is closed in
+[#28](https://github.com/rlancaster243/api-engineering-lab/pull/28), documented in the D3
+section of the verification record above. Everything below is design scope rather than a
+defect.
 
 - **One file, one writer at a time.** SQLite serialises writers, so this is not a deployment
   story for concurrent write load; `timeout=5.0` turns sustained contention into a `503`
