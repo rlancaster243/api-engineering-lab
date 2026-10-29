@@ -37,9 +37,12 @@ commits on `01-rest-api/` carry `Co-authored-by` trailers naming Claude (Opus 5.
 and Cursor Agent; none carries an `Assisted-by` trailer, unlike Projects 2 and 3. Each PR was
 reviewed and merged by the repository owner.
 
-Per the syllabus §1 working principles, this record distinguishes **documented, implemented
-and tested** behavior — which the PostgreSQL test job in CI demonstrates — from independent
+Per the syllabus §1 requirement to record independent-vs-assisted contribution, and §14's rule
+not to collapse evidence levels, this record distinguishes **documented, implemented and
+tested** behavior — which the PostgreSQL test job in CI demonstrates — from independent
 implementation. An unaided repeat remains the stronger qualification and is not claimed,
 matching the disclosure in [`project-2-completion.md`](project-2-completion.md) and
-[`project-3-completion.md`](project-3-completion.md). The same statement appears in the
-Gate E record, [`project-1-gate-e-pr08.md`](project-1-gate-e-pr08.md).
+[`project-3-completion.md`](project-3-completion.md). The Gate E record carries the same
+attribution in shorter form: implementation and documentation AI-assisted on a Cloud Agent,
+intended as a template for an unaided repeat
+([`project-1-gate-e-pr08.md`](project-1-gate-e-pr08.md)).

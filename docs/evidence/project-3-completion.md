@@ -556,7 +556,10 @@ All checks passed!
 ```
 
 The count is unchanged because the fix inverted one test and added one. `-rs` reports no skip
-lines; the single warning is the same `fastapi.testclient` deprecation.
+lines; the single warning is the same `fastapi.testclient` deprecation. Confirmed
+independently in CI on `bd957ef` (`lint & pytest — 03-api-hardening`):
+`53 passed, 1 warning in 1.20s`, with `All checks passed!` and `20 files already formatted`
+from the Ruff step.
 
 Failing-before for D3, on the unmodified `67aae39` tree with the new test added:
 
