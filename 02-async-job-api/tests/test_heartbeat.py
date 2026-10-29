@@ -233,28 +233,15 @@ def test_long_handler_is_not_reclaimed_and_completes_once(
     mid-handler, the second worker's reclaim probe takes the row, the handler runs a
     second time and the first worker's completion is refused.
 
-    The "renew at the full lease instead of a third" mutation is *not* killed here any
-    more, and deliberately so. It used to be, via the same wall-clock count that made
-    this test flaky: sampling a 2.5s window and requiring three renewals happened to
-    distinguish a 333ms interval from a 1s one. That ratio is pinned exactly and
-    without timing by ``test_renewal_interval_is_a_third_of_the_lease``, which fails
-    on that mutation (verified). Duplicating it here bought no coverage and cost
-    punctuality, so this test now asserts only the property it exists for: while the
-    handler is provably alive and its lease live, another worker cannot take the job.
-
-    What this test no longer does is measure the renewal *cadence* by sleeping and
-    counting. It used to sleep 2.5s and require three renewals no more than half a
-    lease apart. That is a punctuality assertion — it asks *when* renewals land, not
-    *whether* the loop runs — and on a throttled runner it failed three different ways
-    on a heartbeat that was healthy and merely stalled (measured at half a core:
-    renewals 1.29s apart, and as few as one renewal in the 2.5s window).
-
-    The ratio is the contract, and it is pinned without timing by
-    ``test_renewal_interval_is_a_third_of_the_lease``, which is exactly what that
-    test's docstring says it is for; adding a second, weaker, time-sampled version of
-    it here is what made this test flaky. What this test asserts instead is the
-    property it exists for: while the handler is provably alive, the lease is pushed
-    past the claim's expiry, and a second worker therefore cannot take the job.
+    The "renew at the full lease instead of a third" mutation is not killed here
+    anymore. This test used to enforce cadence by sleeping 2.5s and requiring three
+    renewals within half a lease — a punctuality check that failed on throttled
+    runners even when the heartbeat was healthy (for example renewals 1.29s apart or
+    only one renewal in the window). The renewal-interval ratio is pinned without
+    timing by ``test_renewal_interval_is_a_third_of_the_lease``, which fails on that
+    mutation. This test now asserts only what it exists for: while the handler is
+    provably alive and its lease is live on the database clock, a second worker cannot
+    take the job.
 
     The wait is event-based — ``wait_until`` returns as soon as the row moves — so a
     late first renewal costs a longer wait and nothing else. ``LEASE_SECONDS`` of
