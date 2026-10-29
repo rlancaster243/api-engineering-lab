@@ -56,13 +56,14 @@ class AssetRepository:
             ),
         )
         self.connection.commit()
-        row = self.get_by_id(asset_id)
+        row = self.get_by_id(tenant_id, asset_id)
         assert row is not None
         return row
 
-    def get_by_id(self, asset_id: str) -> sqlite3.Row | None:
+    def get_by_id(self, tenant_id: str, asset_id: str) -> sqlite3.Row | None:
         return self.connection.execute(
-            f"SELECT {ASSET_COLUMNS} FROM assets WHERE id = ?", (asset_id,)
+            f"SELECT {ASSET_COLUMNS} FROM assets WHERE id = ? AND tenant_id = ?",
+            (asset_id, tenant_id),
         ).fetchone()
 
     def list_for_tenant(self, tenant_id: str, limit: int) -> list[sqlite3.Row]:
@@ -74,11 +75,15 @@ class AssetRepository:
             )
         )
 
-    def tags_for(self, asset_id: str) -> list[str]:
+    def tags_for(self, tenant_id: str, asset_id: str) -> list[str]:
         return [
             row["tag"]
             for row in self.connection.execute(
-                "SELECT tag FROM asset_tags WHERE asset_id = ? ORDER BY tag", (asset_id,)
+                "SELECT t.tag FROM asset_tags t"
+                " INNER JOIN assets a ON a.id = t.asset_id"
+                " WHERE t.asset_id = ? AND a.tenant_id = ?"
+                " ORDER BY t.tag",
+                (asset_id, tenant_id),
             )
         ]
 
@@ -92,7 +97,7 @@ class AssetRepository:
             [(asset_id, tag, timestamp) for tag in tags],
         )
         self.connection.commit()
-        return self.tags_for(asset_id)
+        return self.tags_for(tenant_id, asset_id)
 
     def touch(self, tenant_id: str, asset_id: str) -> bool:
         cursor = self.connection.execute(

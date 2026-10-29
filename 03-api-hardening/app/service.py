@@ -60,10 +60,13 @@ class AssetRegistry:
 
     def get(self, asset_id: str) -> AssetDetail:
         """The detail view a client opens after following a link to an asset."""
-        row = self.repository.get_by_id(asset_id)
+        row = self.repository.get_by_id(self.tenant_id, asset_id)
         if row is None:
             raise ApiError(ErrorCode.ASSET_NOT_FOUND)
-        return AssetDetail(**_summary(row).model_dump(), tags=self.repository.tags_for(asset_id))
+        return AssetDetail(
+            **_summary(row).model_dump(),
+            tags=self.repository.tags_for(self.tenant_id, asset_id),
+        )
 
     def list_page(self, limit: int) -> list[AssetSummary]:
         return [_summary(row) for row in self.repository.list_for_tenant(self.tenant_id, limit)]
@@ -76,9 +79,12 @@ class AssetRegistry:
         # The parent's timestamp is advanced after the tag rows land, so a tag write is
         # never invisible to a client polling the asset.
         self.repository.touch(self.tenant_id, asset_id)
-        row = self.repository.get_by_id(asset_id)
+        row = self.repository.get_by_id(self.tenant_id, asset_id)
         assert row is not None
-        return AssetDetail(**_summary(row).model_dump(), tags=self.repository.tags_for(asset_id))
+        return AssetDetail(
+            **_summary(row).model_dump(),
+            tags=self.repository.tags_for(self.tenant_id, asset_id),
+        )
 
     def reprocess(self, ids: list[str]) -> BatchSummary:
         """Re-derive the stored fingerprint for each asset the caller owns."""

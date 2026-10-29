@@ -88,6 +88,18 @@ def test_get_asset_requires_an_api_key(client: TestClient) -> None:
     assert client.get(f"/v1/assets/{created['id']}").status_code == 401
 
 
+def test_get_of_an_unowned_asset_is_not_found(client: TestClient) -> None:
+    """Following a forwarded link from another tenant must not disclose the asset."""
+    theirs = create_asset(client, ALPHA_KEY, name="Alpha only")
+
+    response = client.get(f"/v1/assets/{theirs['id']}", headers=auth(BETA_KEY))
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "ASSET_NOT_FOUND"
+    assert theirs["source_uri"] not in response.text
+    assert theirs["name"] not in response.text
+
+
 def test_lists_are_tenant_scoped(client: TestClient) -> None:
     mine = create_asset(client, ALPHA_KEY, name="Alpha only")
     theirs = create_asset(client, BETA_KEY, name="Beta only")
