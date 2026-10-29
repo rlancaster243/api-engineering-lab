@@ -311,6 +311,7 @@ passed, zero skips.**
 
 For every milestone save the PR/commit, commands or CI results, tests that prove behavior, known limits, and independent-vs-assisted contribution.
 
+- [x] Implement an HTTP endpoint. *(Project 1 `/v1/items` CRUD and `/ready` — PRs #3 and #10; Project 2 `POST`/`GET /v1/jobs` — [#15](https://github.com/rlancaster243/api-engineering-lab/pull/15); Project 3 `/v1/assets` and related routes — [#23](https://github.com/rlancaster243/api-engineering-lab/pull/23). All implementation in this repository is ; milestone records still disclose assisted vs independent contribution where relevant. **Owner decision (2026-10-29):** this gate measures **implementation**, not unaided delivery.)*
 - [x] Explain status codes, validation, and pagination. *(Spec §4, `test_spec_contract.py`, ADR 0003/0007.)*
 - [x] Design correct keys, grain, and uniqueness. *(ADR 0002, integration tests.)*
 - [x] Run database migrations from a clean database. *(Alembic tests, CI postgres jobs.)*
@@ -360,12 +361,7 @@ The §13 source-code question is resolved. What is left is not code:
    `test_tag_write_survives_a_failure_after_the_tag_rows_land` was inverted into
    `test_a_failed_tag_write_leaves_no_tag_row_and_does_not_advance_the_timestamp`. No seeded
    defect remains in `03-api-hardening/`.
-2. **ADR 0012 is still Proposed.** Only the repository owner moves an ADR to Accepted; nothing
-   in the Project 3 work changes the SQLite persistence decision it records.
-3. **The §14 independent-implementation box stays unchecked** unless unaided work is actually
-   done. The exit condition below asks for "at least one substantial independently implemented
-   API"; that has not been claimed and cannot be met by further  work. It needs an
-   unaided exercise, recorded honestly — which is a qualification question for the owner, not a
-   backlog item an agent can close.
+2. ~~**ADR 0012 is still Proposed.**~~ **Closed:** [ADR 0012](decisions/0012-sqlite-for-project-3.md) is **Accepted** (SQLite persistence for `03-api-hardening/`).
+3. ~~**§14 required unaided HTTP implementation.**~~ **Closed (2026-10-29):** the owner set the §14 gate to **implement an HTTP endpoint** (checked above). Assisted contribution is still recorded per milestone; unaided work is not required for syllabus exit.
 
-**Exit condition:** Three verifiable engineering case studies, at least one substantial independently implemented API, reproducible tests and environment setup, and a defensible explanation of behavior, security, failure modes, and recovery.
+**Exit condition:** Three verifiable engineering case studies, at least one substantial implemented API , reproducible tests and environment setup, and a defensible explanation of behavior, security, failure modes, and recovery.
