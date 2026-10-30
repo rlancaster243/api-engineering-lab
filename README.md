@@ -60,6 +60,12 @@ for dir in 01-rest-api 02-async-job-api 03-api-hardening; do
 done
 ```
 
+## Lab walkthrough
+
+For a one-page portfolio narrative, honest limits (AI assistance, SQLite vs PostgreSQL,
+seeded defects), and step-by-step commands to run all three modules from a clean checkout,
+see **[Lab walkthrough](docs/LAB_WALKTHROUGH.md)**.
+
 ## Documentation
 
 - [Action syllabus](docs/API_ENGINEERING_SYLLABUS.md)
