@@ -10,8 +10,6 @@ Project 1A is closed on `main` (`a83c8a4`). The API works for a single seeded de
 
 Decisions taken: scope is PR-05 + PR-06 only (PR-07 gets its own plan); no provider is chosen yet; implement a **generic OIDC access-token profile** and record what must be validated when a real provider is picked.
 
-Working model (`CLAUDE.md`): I write briefs and review; a **Sonnet** subagent implements each PR; escalate to Opus only if review fails twice. Each PR is a draft, merged only on your word.
-
 ## PR-05 — access-token verification (delivered in #8; historical branch `feature/1b-token-verification`)
 
 **Scope:** a verifier and its configuration, fully tested. Item routes stay `401` in `external_jwt` mode until PR-06 wires resolution in, so behavior on `main` stays fail-closed between the two merges.

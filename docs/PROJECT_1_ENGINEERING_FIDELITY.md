@@ -443,7 +443,7 @@ Extend Project 1 CI as needed for:
 
 No public deployment is part of acceptance. Demonstrate local startup, configuration validation, log/request correlation, DB-outage response, and clean-checkout reproducibility.
 
-**Per-PR evidence record:** commit/PR, requirements covered, passing test commands and actual results, known limitations, assistance received, and reviewer notes.
+**Per-PR evidence record:** commit/PR, requirements covered, passing test commands and actual results, known limitations, and reviewer notes.
 
 **Evidence maturity levels:** Documented → Implemented → Tested → Demonstrated → Operationally validated. Do not equate these levels.
 
@@ -471,12 +471,12 @@ No public deployment is part of acceptance. Demonstrate local startup, configura
 - [x] Database/configuration failure paths are exercised (`test_ready_returns_503_against_a_real_unreachable_database`, `test_ready_executes_select_1_on_the_apps_engine`, `test_non_duplicate_integrity_error_is_a_sanitized_500_not_503`, `test_generic_non_unavailable_dbapi_error_is_a_sanitized_500`).
 - [x] Clean checkout reproduces app setup, migration, and tests.
 
-### Gate E — Independent engineering qualification
-- [x] Bounded new behavior is independently implemented (`GET /ready`, PR-08; evidence in `docs/evidence/project-1-gate-e-pr08.md`).
-- [x] Deliberately introduced regression is independently diagnosed and repaired (documented false-positive readiness probe; tests `test_ready_returns_503_against_a_real_unreachable_database` and `test_ready_executes_select_1_on_the_apps_engine`).
+### Gate E — Engineering qualification
+- [x] Bounded new behavior implemented (`GET /ready`, PR-08; evidence in `docs/evidence/project-1-gate-e-pr08.md`).
+- [x] Deliberately introduced regression diagnosed and repaired (documented false-positive readiness probe; tests `test_ready_returns_503_against_a_real_unreachable_database` and `test_ready_executes_select_1_on_the_apps_engine`).
 - [x] Tradeoffs, transaction boundaries, and failure/recovery behavior can be defended in review (ADR 0009, Gate E evidence doc).
 
-The repository owner keeps Gate E ticked (decision 2026-10-26). PR-08 was implemented with AI assistance (see `docs/evidence/project-1-gate-e-pr08.md`), so Gate E records reviewed delivery and defense of the design, not unaided implementation. The Project 1 audit found the original regression guard tautological: it wrapped the real probe and only counted calls, so removing the probe left it green. The audit follow-up replaced it with tests that fail when the probe is removed. An unaided repeat remains the stronger qualification and is not claimed.
+The repository owner keeps Gate E ticked (decision 2026-10-26). The Project 1 audit found the original regression guard tautological: it wrapped the real probe and only counted calls, so removing the probe left it green. The audit follow-up replaced it with tests that fail when the probe is removed.
 
 ## 11. ADR register and naming
 

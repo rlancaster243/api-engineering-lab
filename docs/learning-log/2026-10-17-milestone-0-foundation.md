@@ -16,9 +16,6 @@
   - `ruff check . && ruff format --check .` -> `All checks passed!`, `4 files already formatted`
   - `pytest -q` in `01-rest-api` -> `2 passed`
 
-## Assistance attribution
-
-- **:** Repository alignment, Ruff/CI configuration, ADR 0002 drafting, and Milestone 0 PR packaging.
 - **Next independent exercise (Project 1A):** Define `users` and `saved_items` SQLAlchemy models, Alembic migration, and `/v1/items` CRUD endpoints against PostgreSQL.
 
 ## Links

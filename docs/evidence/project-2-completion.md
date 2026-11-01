@@ -130,4 +130,3 @@ current `main` head. Migrations run forward from an empty database through `0001
 
 This is a lab system. It is not production-ready, and it does not claim exactly-once
 delivery.
-

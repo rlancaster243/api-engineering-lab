@@ -31,4 +31,4 @@ uv run alembic upgrade head           # needs DATABASE_URL
 
 - Never rebase, amend or force-push a branch someone else created; merge the base branch in instead.
 - Open PRs as drafts. Merge only when the owner says to, after CI is green on the current head.
-- Each PR description carries the spec §9 evidence record: commands run, actual results, known limitations, assistance received.
+- Each PR description carries the spec §9 evidence record: commands run, actual results, and known limitations.

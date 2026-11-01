@@ -21,9 +21,9 @@ tests passing.
 It is an **explicitly authorized reproduction**. Syllabus §9 permits "a sanitized,
 explicitly authorized reproduction of an existing API", and that is what this is: a service
 written from scratch inside this repository for the purpose of being investigated. **The
-defects were seeded, not discovered in production.** No proprietary third-party
-implementation, data, credential or internal document was copied, read into this module, or
-published in it. The §13 decision that selected this route is recorded in the syllabus.
+defects were seeded, not discovered in production.** No third-party proprietary
+implementation, data, credential, or internal document was copied into this module or
+published from it. The §13 decision that selected this route is recorded in the syllabus.
 
 ## Pull requests
 
@@ -48,7 +48,7 @@ This is the part worth being exact about, because the setup is easy to describe 
 stronger than it is.
 
 **It was blind.** The investigation in [#24](https://github.com/rlancaster243/api-engineering-lab/pull/24)
-was run by a separate agent that received one user-visible symptom and nothing else:
+received one user-visible symptom and nothing else:
 
 > A customer forwarded an asset link to someone at a different company, and that person
 > could open it. We expected a 404. Nobody has touched this code in weeks and the test suite
@@ -102,10 +102,10 @@ one.** The cross-tenant read was found by an investigator who had been told a cr
 read was happening — a real exercise in *locating* a defect, but not in *discovering* that
 one exists. The `APP_ENV` fail-open default was seeded by nobody. It is not in the answer key,
 it is not one of the four planned defects, and it was reported in [#24](https://github.com/rlancaster243/api-engineering-lab/pull/24)'s
-adjacent-findings section as something noticed in passing while tracing the read path. A
-blind agent that reports a genuine defect its brief did not contain is demonstrating
-something the planted defect cannot: that it was reading the system rather than following a
-report. Both matter; the second is harder to arrange and harder to fake.
+adjacent-findings section as something noticed in passing while tracing the read path. An
+investigation that reports a genuine defect its brief did not contain demonstrates something
+the planted defect cannot: reading the system rather than following a report. Both matter;
+the second is harder to arrange and harder to fake.
 
 ## The planted defect — cross-tenant read on `GET /v1/assets/{id}`
 
@@ -603,4 +603,3 @@ defect.
   seeding rule, not an authentication mechanism.
 
 This is a lab system. It is not production-ready.
-

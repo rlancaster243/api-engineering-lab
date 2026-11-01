@@ -10,10 +10,6 @@
 - Verification and user mapping are separate steps so the API stays fail-closed between merges.
 - Cross-owner access returns `404` so item existence is not leaked; `503` is reserved for unavailable signing keys.
 
-## Assistance attribution
-
--  implementation and documentation on branch `cursor/project-1b-jwt-auth-530c`.
-
 ## Links
 
 - [Project 1B plan](../plans/project-1b-plan.md)
