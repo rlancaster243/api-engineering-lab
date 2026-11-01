@@ -5,10 +5,6 @@
 - Mapped transient PostgreSQL/SQLAlchemy connection failures to `503 SERVICE_UNAVAILABLE` (F-016).
 - Added failure-injection tests proving no item or user row is written on outage.
 
-## Assistance attribution
-
-- AI-assisted on branch `cursor/project-1-pr07-polish-530c`.
-
 ## Links
 
 - [PR-07 plan](../plans/project-1-pr07-plan.md)

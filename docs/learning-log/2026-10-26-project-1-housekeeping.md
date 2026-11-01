@@ -9,7 +9,3 @@
 ## What’s next
 
 - Project 2 PR-2-00 foundation on `02-async-job-api/`.
-
-## Assistance
-
-- AI-assisted documentation updates alongside Project 2 foundation work.

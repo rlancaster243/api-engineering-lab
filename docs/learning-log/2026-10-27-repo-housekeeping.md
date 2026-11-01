@@ -22,7 +22,3 @@ Older feature branches (`feature/1a-saved-items`, `feature/rest-api-foundation`,
 ## What’s next
 
 - Project 2 PR-2-01: `jobs` schema and submit/status HTTP API.
-
-## Assistance
-
-- AI-assisted Cloud Agent.

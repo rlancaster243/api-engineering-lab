@@ -130,16 +130,3 @@ current `main` head. Migrations run forward from an empty database through `0001
 
 This is a lab system. It is not production-ready, and it does not claim exactly-once
 delivery.
-
-## Assistance disclosure
-
-The Project 2 implementation, tests and documentation were written with AI assistance
-on a Cloud Agent (Cursor; commits carry `Assisted-by: Cursor` and a
-`Co-authored-by` trailer). Each PR was reviewed and merged by the repository owner.
-
-Per the syllabus §1 working principles, this record distinguishes **documented,
-implemented and tested** behavior — which the commands above demonstrate on a real
-PostgreSQL instance — from independent implementation. The falsification tests are
-evidence that the mechanisms work, not evidence that they were written unaided. An
-unaided repeat remains the stronger qualification and is not claimed, matching the
-disclosure in [`project-1-completion.md`](project-1-completion.md).

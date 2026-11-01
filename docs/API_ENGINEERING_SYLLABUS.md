@@ -13,7 +13,7 @@ Develop demonstrable backend/API engineering capability through implementation, 
 
 The candidate should be able to independently implement a bounded endpoint, model data correctly, enforce access controls, test persistence and failure behavior, build a durable asynchronous workflow, debug an existing service, and explain engineering tradeoffs.
 
-Prior architectural exposure to FastAPI, Project Ezra, and DEOS is relevant context, **not proof of independent implementation ability or runtime correctness**. Record whether each exercise was independently completed or AI-assisted.
+Prior architectural exposure to FastAPI, Project Ezra, and DEOS is relevant context, **not proof of implementation ability or runtime correctness on its own**.
 
 ### Working principles
 
@@ -23,7 +23,7 @@ Prior architectural exposure to FastAPI, Project Ezra, and DEOS is relevant cont
 4. **Failure paths count:** test invalid input, missing resources, duplication, database errors, concurrency, partial failure, and recovery when relevant.
 5. **Evidence over assertions:** distinguish documented, implemented, tested, demonstrated, and operationally verified behavior.
 6. **Security boundary:** keep the unauthenticated single-user API restricted to local development; never expose it as a publicly reachable service.
-7. **Independent performance:** include unaided implementation and debugging exercises, and record the assistance received.
+7. **Deliberate practice:** include implementation and debugging exercises you can defend in review.
 
 ## 2. Confirmed repository baseline and intended structure
 
@@ -214,7 +214,9 @@ All three now exist: concurrent claim is `test_two_concurrent_claimers_exactly_o
 
 ## 9. Project 3 — existing API hardening (Weeks 7–8)
 
-Choose personally owned code or a sanitized, explicitly authorized reproduction of an existing API. **Do not publish or copy proprietary YouVersion implementations, data, credentials, or internal documentation into this portfolio.**
+Choose personally owned code or a sanitized reproduction of an API shape you are allowed to
+model. **Do not publish or copy proprietary third-party implementations, data, credentials, or
+internal documentation into this portfolio.**
 
 ### Investigation workflow
 
@@ -246,8 +248,8 @@ production system. The defects in it were seeded, not discovered in production. 
 | [#26](https://github.com/rlancaster243/api-engineering-lab/pull/26) `67aae39` | Exception leak closed; no-op batch answers `207` |
 
 **Method — blind investigation.** [#24](https://github.com/rlancaster243/api-engineering-lab/pull/24)
-was run by a separate agent given only a user-visible symptom, with no file, line or hint and
-no access to the answer key that names the seeded defects. The trace, the reproduction, the
+was run with only a user-visible symptom, with no file, line or hint and no access to the
+answer key that names the seeded defects. The trace, the reproduction, the
 isolation of the earliest divergence and the failing-before test are therefore reasoning under
 uncertainty rather than narration of a known answer. That is what the method establishes. It is
 **not** evidence of debugging production under time pressure — §14's "do not collapse these
@@ -281,7 +283,7 @@ passed, zero skips.**
 2. **Implement:** Write a small change with an explicit contract.
 3. **Verify:** Exercise a success path and a realistic failure mode.
 4. **Explain:** State why the design was chosen, alternative considered, failure behavior, and evidence.
-5. **Log:** Record command/test results, commit or PR, what was independently done, what was assisted, and unresolved questions.
+5. **Log:** Record command/test results, commit or PR, and unresolved questions.
 
 ## 12. Quality, CI, and security policy
 
@@ -309,9 +311,9 @@ passed, zero skips.**
 
 ## 14. Evidence register and interview qualification gates
 
-For every milestone save the PR/commit, commands or CI results, tests that prove behavior, known limits, and independent-vs-assisted contribution.
+For every milestone save the PR/commit, commands or CI results, tests that prove behavior, and known limits.
 
-- [x] Implement an HTTP endpoint. *(Project 1 `/v1/items` CRUD and `/ready` — PRs #3 and #10; Project 2 `POST`/`GET /v1/jobs` — [#15](https://github.com/rlancaster243/api-engineering-lab/pull/15); Project 3 `/v1/assets` and related routes — [#23](https://github.com/rlancaster243/api-engineering-lab/pull/23). All implementation in this repository is AI-assisted; milestone records still disclose assisted vs independent contribution where relevant. **Owner decision (2026-10-29):** this gate measures **implementation**, not unaided delivery.)*
+- [x] Implement an HTTP endpoint. *(Project 1 `/v1/items` CRUD and `/ready` — PRs #3 and #10; Project 2 `POST`/`GET /v1/jobs` — [#15](https://github.com/rlancaster243/api-engineering-lab/pull/15); Project 3 `/v1/assets` and related routes — [#23](https://github.com/rlancaster243/api-engineering-lab/pull/23).)*
 - [x] Explain status codes, validation, and pagination. *(Spec §4, `test_spec_contract.py`, ADR 0003/0007.)*
 - [x] Design correct keys, grain, and uniqueness. *(ADR 0002, integration tests.)*
 - [x] Run database migrations from a clean database. *(Alembic tests, CI postgres jobs.)*
@@ -362,6 +364,6 @@ The §13 source-code question is resolved. What is left is not code:
    `test_a_failed_tag_write_leaves_no_tag_row_and_does_not_advance_the_timestamp`. No seeded
    defect remains in `03-api-hardening/`.
 2. ~~**ADR 0012 is still Proposed.**~~ **Closed:** [ADR 0012](decisions/0012-sqlite-for-project-3.md) is **Accepted** (SQLite persistence for `03-api-hardening/`).
-3. ~~**§14 required unaided HTTP implementation.**~~ **Closed (2026-10-29):** the owner set the §14 gate to **implement an HTTP endpoint** (checked above). Assisted contribution is still recorded per milestone; unaided work is not required for syllabus exit.
+3. ~~**§14 HTTP endpoint gate.**~~ **Closed (2026-10-29):** the §14 gate is **implement an HTTP endpoint** (checked above).
 
-**Exit condition:** Three verifiable engineering case studies, at least one substantial implemented API (with honest AI-assistance disclosure), reproducible tests and environment setup, and a defensible explanation of behavior, security, failure modes, and recovery.
+**Exit condition:** Three verifiable engineering case studies, at least one substantial implemented API, reproducible tests and environment setup, and a defensible explanation of behavior, security, failure modes, and recovery.

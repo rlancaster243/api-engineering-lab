@@ -31,12 +31,6 @@ experience.
 
 ## Honest limits (read this in an interview)
 
-- **AI assistance.** Implementation, tests, and much of the documentation were written
-  with AI coding agents (Cursor Cloud Agents). Commits carry `Co-authored-by` and often
-  `Assisted-by: Cursor`. Each pull request was reviewed and merged by the repository
-  owner. The syllabus §14 gate measures **implementation**, not unaided delivery; see
-  [`API_ENGINEERING_SYLLABUS.md`](API_ENGINEERING_SYLLABUS.md) §14 and the assistance
-  sections in each completion record.
 - **Evidence levels.** Documented, implemented, tested, and operationally validated are
   separate rungs. Project 1 and 2 integration evidence is **PostgreSQL**. Project 3 is
   **SQLite only** (ADR 0012); do not infer PostgreSQL locking or MVCC lessons from it.

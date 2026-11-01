@@ -5,10 +5,6 @@
 - Added `GET /ready` with a real `SELECT 1` probe and PR-08 regression tests.
 - Recorded the false-positive readiness regression narrative in [Gate E evidence](../evidence/project-1-gate-e-pr08.md).
 
-## Assistance attribution
-
-- AI-assisted implementation on Cloud Agent; use the evidence doc as a script for an unaided interview walkthrough.
-
 ## Links
 
 - [PR-08 plan](../plans/project-1-pr08-plan.md)

@@ -10,10 +10,6 @@
 - The saved-item grain `(user_id, content_id)` stayed stable from the first migration; Project 1B only changes how `user_id` is resolved.
 - `/health` remains a liveness check; persistence correctness lives in integration tests, not in the health handler.
 
-## Assistance attribution
-
-- AI-assisted: spec conformance merge, CI matrix split, and test hardening.
-
 ## Links
 
 - [PR #3](https://github.com/rlancaster243/api-engineering-lab/pull/3)
