@@ -13,7 +13,8 @@ Develop demonstrable backend/API engineering capability through implementation, 
 
 The candidate should be able to independently implement a bounded endpoint, model data correctly, enforce access controls, test persistence and failure behavior, build a durable asynchronous workflow, debug an existing service, and explain engineering tradeoffs.
 
-Prior architectural exposure to FastAPI, prior work, and prior systems is relevant context, **not proof of implementation ability or runtime correctness on its own**.
+Prior exposure to other API and platform work is useful context, **not proof of
+implementation ability or runtime correctness on its own**.
 
 ### Working principles
 
