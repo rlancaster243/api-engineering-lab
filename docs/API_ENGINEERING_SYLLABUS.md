@@ -247,6 +247,7 @@ production system. The defects in it were seeded, not discovered in production. 
 | [#24](https://github.com/rlancaster243/api-engineering-lab/pull/24) `20eac5c` | Blind investigation of the escalated report; cross-tenant read fixed |
 | [#25](https://github.com/rlancaster243/api-engineering-lab/pull/25) `cb3b2b1` | Unplanted finding: `APP_ENV` fail-open closed |
 | [#26](https://github.com/rlancaster243/api-engineering-lab/pull/26) `67aae39` | Exception leak closed; no-op batch answers `207` |
+| [#28](https://github.com/rlancaster243/api-engineering-lab/pull/28) | D3 closed: tag rows and parent `updated_at` share one commit in `add_tags`; regression test inverted |
 
 **Method — blind investigation.** [#24](https://github.com/rlancaster243/api-engineering-lab/pull/24)
 was run with only a user-visible symptom, with no file, line or hint and no access to the
@@ -262,8 +263,9 @@ the report.
 **Gate met:** failing-before was reproduced on the parent commit (`assert 200 == 404` for the
 cross-tenant read, `assert 200 == 207` for the batch, `published key authenticated with 200`
 for `APP_ENV`), each fix was reviewed and merged, and each PR carries the operational
-explanation — blast radius, deployment consideration and rollback. Suite on `67aae39`: **53
-passed, zero skips.**
+explanation — blast radius, deployment consideration and rollback. Suite on **`main`**: **53
+passed, zero skips** (count unchanged after #28; one test inverted for the D3 transaction
+boundary).
 
 ## 10. Eight-week action schedule
 

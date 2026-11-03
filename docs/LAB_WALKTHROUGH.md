@@ -170,8 +170,8 @@ integration tests.
 | Project 3 | [`evidence/project-3-completion.md`](evidence/project-3-completion.md) | [0012](decisions/0012-sqlite-for-project-3.md) |
 
 Syllabus gates, §14 qualification checklist, and exit condition:
-[`API_ENGINEERING_SYLLABUS.md`](API_ENGINEERING_SYLLABUS.md) (§9 evidence register, §14
-gates, exit condition at end of §14).
+[`API_ENGINEERING_SYLLABUS.md`](API_ENGINEERING_SYLLABUS.md) — **§14** evidence register,
+qualification gates, and exit condition; **§9** for Project 3 delivery narrative.
 
 Gate E / readiness work for Project 1:
 [`evidence/project-1-gate-e-pr08.md`](evidence/project-1-gate-e-pr08.md).

@@ -8,10 +8,10 @@
 4. **PR-2-03 (Recovery):** Done ([#17](https://github.com/rlancaster243/api-engineering-lab/pull/17)) — retries with backoff, lease-expiry recovery, crash falsification tests.
 5. **PR-2-04a (Effects):** Done ([#19](https://github.com/rlancaster243/api-engineering-lab/pull/19)) — transactional outbox plus reconciler, so a reclaimed job does not repeat an external side effect (falsification case 4).
 6. **PR-2-04b (Idempotency):** Done ([#20](https://github.com/rlancaster243/api-engineering-lab/pull/20)) — `Idempotency-Key` on `POST /v1/jobs` per ADR 0011, so a retried submission replays one job instead of creating a second.
-7. **PR-2-06 (Heartbeat):** In review ([#22](https://github.com/rlancaster243/api-engineering-lab/pull/22)) — lease heartbeat plus a live-lease guard on the reconciler. A long handler keeps its lease, and the reconciler no longer applies an effect underneath a handler that is still alive. Not merged yet; the six PRs above are.
+7. **PR-2-06 (Heartbeat):** Done ([#22](https://github.com/rlancaster243/api-engineering-lab/pull/22), `e5b3c84`) — lease heartbeat plus a live-lease guard on the reconciler. A long handler keeps its lease, and the reconciler no longer applies an effect underneath a handler that is still alive.
 
-**Project 2 is complete on `main`** through PR-2-04b. Submission idempotency, the job
-store, the worker, retry and lease recovery, and the effect outbox are all in place.
+**Project 2 is complete on `main`** through PR-2-06 (209 tests, zero skips). Submission idempotency, the job
+store, the worker, retry and lease recovery, the effect outbox, and lease heartbeat are all in place.
 Completion record:
 [`docs/evidence/project-2-completion.md`](../docs/evidence/project-2-completion.md).
 

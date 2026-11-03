@@ -18,7 +18,7 @@ Before this decision, `.github/workflows/ci.yml` installed dependencies with `pi
 
 1. **Execution environments are exactly two:** a developer machine and GitHub Actions. There is no deployed environment, and no acceptance criterion depends on one.
 2. **Database:** PostgreSQL 16, reached through `DATABASE_URL`. Persistence tests run against a real PostgreSQL instance. Mocked HTTP responses or another engine (for example SQLite) do not substitute for them.
-3. **CI database:** a service container declared at the **job** level on a dedicated `01-rest-api` job. Projects `02-async-job-api` and `03-api-hardening` have no database tests and start no database. The credentials in CI are throwaway values for an ephemeral container and are not secrets.
+3. **CI database:** dedicated **postgres integration** jobs for `01-rest-api` and `02-async-job-api` (PostgreSQL 16 service containers at the job level, migrations + full `pytest` with `REQUIRE_DATABASE=1`). A separate **lint & pytest** matrix job runs per module (Ruff and tests that do not require the integration database setup). `03-api-hardening` uses SQLite only; its CI job runs Ruff and `pytest` with `APP_ENV=test` and no database service. Credentials in CI are throwaway values for ephemeral containers and are not secrets.
 4. **Dependencies:** each project commits a `uv.lock`. CI installs with `uv sync --locked`, which fails when `pyproject.toml` and `uv.lock` disagree. The uv version is pinned in the workflow to the version that produced the lockfiles. Dependency changes are made in `pyproject.toml`, followed by `uv lock` and committing the result.
 5. **Single-user development mode** (spec §5.3) is accepted only when `APP_ENV` is `local` or `test`, and never as a fallback for failed token verification.
 6. **Evidence:** a check passing in CI is evidence that the checked commands succeeded on that commit. It is not evidence of production readiness, and no document may claim it is.
@@ -35,8 +35,7 @@ Before this decision, `.github/workflows/ci.yml` installed dependencies with `pi
 
 - No staging or production behavior is observed. Operational claims stop at "demonstrated locally and in CI".
 - Three lockfiles must be kept current, and the pinned uv version must be bumped deliberately.
-- The `01-rest-api` database job currently only proves the container starts and accepts connections at `DATABASE_URL`. PR-02 and PR-03 must extend that job to run Alembic and the integration tests; until they do, the requirement for PostgreSQL-backed tests is **not** met.
-- Adding a second project with database tests means adding a second dedicated job, or generalizing this one.
+- Postgres integration coverage requires maintaining service containers and migration steps on the dedicated CI jobs; adding another Postgres-backed module means extending that pattern.
 
 ## References
 
