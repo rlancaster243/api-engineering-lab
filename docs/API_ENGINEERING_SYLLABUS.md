@@ -247,7 +247,7 @@ production system. The defects in it were seeded, not discovered in production. 
 | [#24](https://github.com/rlancaster243/api-engineering-lab/pull/24) `20eac5c` | Blind investigation of the escalated report; cross-tenant read fixed |
 | [#25](https://github.com/rlancaster243/api-engineering-lab/pull/25) `cb3b2b1` | Unplanted finding: `APP_ENV` fail-open closed |
 | [#26](https://github.com/rlancaster243/api-engineering-lab/pull/26) `67aae39` | Exception leak closed; no-op batch answers `207` |
-| [#28](https://github.com/rlancaster243/api-engineering-lab/pull/28) | D3 closed: tag rows and parent `updated_at` share one commit in `add_tags`; regression test inverted |
+| [#28](https://github.com/rlancaster243/api-engineering-lab/pull/28) | Split tag/timestamp transaction closed: tag rows and parent `updated_at` share one commit in `add_tags`; regression test inverted |
 
 **Method — blind investigation.** [#24](https://github.com/rlancaster243/api-engineering-lab/pull/24)
 was run with only a user-visible symptom, with no file, line or hint and no access to the
@@ -264,8 +264,8 @@ the report.
 cross-tenant read, `assert 200 == 207` for the batch, `published key authenticated with 200`
 for `APP_ENV`), each fix was reviewed and merged, and each PR carries the operational
 explanation — blast radius, deployment consideration and rollback. Suite on **`main`**: **53
-passed, zero skips** (count unchanged after #28; one test inverted for the D3 transaction
-boundary).
+passed, zero skips** (count unchanged after #28; one test inverted for the split
+tag/timestamp transaction).
 
 ## 10. Eight-week action schedule
 
@@ -359,7 +359,7 @@ their evidence records are on `main`: [Project 1](evidence/project-1-completion.
 [Project 2](evidence/project-2-completion.md), [Project 3](evidence/project-3-completion.md).
 The §13 source-code question is resolved. What is left is not code:
 
-1. ~~**D3 in `03-api-hardening/`** — the split tag/timestamp transaction, deliberately deferred.~~
+1. ~~**Split tag/timestamp transaction in `03-api-hardening/`** — deliberately deferred.~~
    **Closed** ([#28](https://github.com/rlancaster243/api-engineering-lab/pull/28)):
    the transaction boundary moved into `AssetRepository.add_tags`, so the tag rows and the
    parent's `updated_at` share one commit, and

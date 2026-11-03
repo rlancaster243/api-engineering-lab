@@ -36,8 +36,8 @@ renders its own merge state, so this table does not restate it.
 | [#23](https://github.com/rlancaster243/api-engineering-lab/pull/23) | `e873081` | The asset registry itself: schema, tenant-scoped repository, service layer, error envelope, 38-test suite passing while four defects are present, ADR 0012 filed as Proposed |
 | [#24](https://github.com/rlancaster243/api-engineering-lab/pull/24) | `20eac5c` | Blind investigation of the escalated report: tenant predicate added to `get_by_id` and `tags_for`, regression test added |
 | [#25](https://github.com/rlancaster243/api-engineering-lab/pull/25) | `cb3b2b1` | The unplanted finding: `APP_ENV` required, no default anywhere, local mode decided once from the loaded `Settings` |
-| [#26](https://github.com/rlancaster243/api-engineering-lab/pull/26) | `67aae39` | D2 exception leak closed, D4 no-op batch answers `207`, README corrected, D3 deferred as a known limitation |
-| [#28](https://github.com/rlancaster243/api-engineering-lab/pull/28) | — | D3 closed: the parent's `updated_at` moves inside `AssetRepository.add_tags`'s single commit, `touch` removed, the test that pinned the split write inverted |
+| [#26](https://github.com/rlancaster243/api-engineering-lab/pull/26) | `67aae39` | Exception text no longer reaches the client; a batch that processed nothing answers `207`; README corrected; split tag/timestamp transaction deferred as a known limitation |
+| [#28](https://github.com/rlancaster243/api-engineering-lab/pull/28) | — | Split tag/timestamp transaction closed: the parent's `updated_at` moves inside `AssetRepository.add_tags`'s single commit, `touch` removed, the test that pinned the split write inverted |
 
 Test counts move with each change, measured on this tree: **38** after #23, **39** after #24,
 **51** after #25, **53** after #26, and **53** after #28 (one test inverted, one added).
@@ -56,9 +56,9 @@ received one user-visible symptom and nothing else:
 
 No file, no line, no function name, no hint at which of the four seeded defects was the
 reported one, and — the control that makes the word meaningful — no access to the written
-answer key. Blindness here is enforced by withholding the file, not by an honour system; the
-key names D1 as the primary defect and D2 as the intended distractor, and none of that
-reached the investigator.
+answer key. Blindness here is enforced by withholding that file, not by an honour system;
+which defect was primary and which were deliberate distractors lived only in the key, and
+none of that reached the investigator.
 
 **So the reasoning is real.** The reproduction, the trace from route to SQL, the isolation of
 the earliest divergence, the failing-before test and the rejection of the plausible
@@ -352,10 +352,12 @@ underway to reach. It is the strongest evidence in the phase, not unlimited evid
 
 ## The follow-up fixes
 
-D2 and D4 both in [#26](https://github.com/rlancaster243/api-engineering-lab/pull/26); D3 in
+The exception-leak and no-op batch fixes both landed in
+[#26](https://github.com/rlancaster243/api-engineering-lab/pull/26); the split
+tag/timestamp transaction in
 [#28](https://github.com/rlancaster243/api-engineering-lab/pull/28).
 
-### D2 — exception text reached the client
+### Exception text reached the client
 
 An unexpected exception rendered `str(exc)` in the `500` envelope, so a storage fault
 answered with driver text such as `no such table: asset_tags` — relation names and, for other
@@ -377,7 +379,7 @@ Three existing tests had asserted the leak, which is what the seeded suite was d
 They were inverted rather than deleted: the new assertion is stricter — the fixed message
 *and* the relation absent from the whole serialised response.
 
-### D4 — a batch that processed nothing answered `200`
+### A batch that processed nothing answered `200`
 
 `reprocess` returned `200` with `{"processed": 0, "failed": 3}` when every id failed, so a
 client that branched on the status recorded a successful reprocess of assets it never
@@ -401,7 +403,7 @@ per-item `results` body, which raising a contract error would have discarded, be
 | Some reprocessed, some failed | `200` — `results` marks each item |
 | No item reprocessed, at least one failed | `207 Multi-Status` |
 
-### D3 — a tag write was not atomic with its parent's `updated_at`
+### A tag write was not atomic with its parent's `updated_at`
 
 `POST /v1/assets/{id}/tags` committed the tag rows and then advanced the parent's
 `updated_at` in a second transaction. A failure between the two commits left tag rows
@@ -475,8 +477,8 @@ defect reproduced verbatim — the published key authenticated again.
 
 | Reverted | Result | Named test that went red |
 |---|---|---|
-| D2: restore `message=str(exc) or None` | `1 failed, 52 passed` | `tests/test_errors.py::test_a_storage_failure_does_not_quote_the_driver` |
-| D4: drop the `207` branch | `2 failed, 51 passed` | `tests/test_batch.py::test_reprocess_answers_207_when_every_item_failed`, `tests/test_errors.py::test_a_malformed_identifier_does_not_reach_the_database` |
+| Exception leak: restore `message=str(exc) or None` | `1 failed, 52 passed` | `tests/test_errors.py::test_a_storage_failure_does_not_quote_the_driver` |
+| No-op batch: drop the `207` branch | `2 failed, 51 passed` | `tests/test_batch.py::test_reprocess_answers_207_when_every_item_failed`, `tests/test_errors.py::test_a_malformed_identifier_does_not_reach_the_database` |
 | `/ready` guard: interpolate the driver text | `1 failed, 4 passed` (test_ready.py only) | `tests/test_ready.py::test_ready_is_unavailable_when_the_file_cannot_be_opened` |
 
 Restored tree after each: `53 passed`.
@@ -485,7 +487,7 @@ Restored tree after each: `53 passed`.
 
 | Reverted | Result | Named test that went red |
 |---|---|---|
-| D3: revert `add_tags` and the service call to the `67aae39` split write | `1 failed, 52 passed, 1 warning in 0.77s` | `tests/test_tags.py::test_a_failed_tag_write_leaves_no_tag_row_and_does_not_advance_the_timestamp` |
+| Split tag write: revert `add_tags` and the service call to the `67aae39` split write | `1 failed, 52 passed, 1 warning in 0.77s` | `tests/test_tags.py::test_a_failed_tag_write_leaves_no_tag_row_and_does_not_advance_the_timestamp` |
 
 Restored tree after the revert: `53 passed`. The named failure is
 `assert ['finance'] == []` — the tag row committed by the first transaction, which is the
@@ -501,7 +503,7 @@ stays `200`), `test_unknown_app_env_is_rejected`, `test_production_startup_seeds
 
 ## Verification record
 
-The tree before D3 was closed, at `67aae39`, in `03-api-hardening/`:
+The tree before the split tag/timestamp transaction was closed, at `67aae39`, in `03-api-hardening/`:
 
 ```bash
 uv sync --locked --extra dev
@@ -535,9 +537,9 @@ Failing-before was re-established for this record rather than taken from the PR 
 No PostgreSQL involvement: this module is SQLite by ADR 0012 and nothing here exercises MVCC,
 row locking, serialization failure or `READ COMMITTED` visibility. **§14 evidence for this
 phase stops at "tested on SQLite".** It is not PostgreSQL transaction evidence, and nothing
-in the D3 fix should be read as a PostgreSQL locking finding.
+in the tag-write atomicity fix should be read as a PostgreSQL locking finding.
 
-### D3 — closed in [#28](https://github.com/rlancaster243/api-engineering-lab/pull/28)
+### Split tag/timestamp transaction — closed in [#28](https://github.com/rlancaster243/api-engineering-lab/pull/28)
 
 Measured on the #28 branch head, in `03-api-hardening/`:
 
@@ -560,7 +562,7 @@ independently in CI on the same branch head (`lint & pytest — 03-api-hardening
 `53 passed, 1 warning in 1.20s`, with `All checks passed!` and `20 files already formatted`
 from the Ruff step.
 
-Failing-before for D3, on the pre-fix app code with the new test added:
+Failing-before for the split tag/timestamp fix, on the pre-fix app code with the new test added:
 
 ```text
 >       assert stored_tags(connection, created["id"]) == []
@@ -580,10 +582,11 @@ restored, `53 passed`.
 ## Known limitations
 
 Mirrored from the current `03-api-hardening/README.md`, which is authoritative if the two
-disagree. **No seeded defect remains**: D3 was the last one and it is closed in
-[#28](https://github.com/rlancaster243/api-engineering-lab/pull/28), documented in the D3
-section of the verification record above. Everything below is design scope rather than a
-defect.
+disagree. **No seeded defect remains**: the split tag/timestamp transaction was the last one
+and it is closed in
+[#28](https://github.com/rlancaster243/api-engineering-lab/pull/28), documented in the
+split-write section of the verification record above. Everything below is design scope rather
+than a defect.
 
 - **One file, one writer at a time.** SQLite serialises writers, so this is not a deployment
   story for concurrent write load; `timeout=5.0` turns sustained contention into a `503`
