@@ -28,4 +28,4 @@
 ## Open follow-ups
 
 - External IdP provider checklist in ADR 0005 (not required for local/CI).
-- Project 2 PR-2-01+ per [project-2 plan](../plans/project-2-plan.md).
+- ~~Project 2 (async job API)~~ **Done** — see [`docs/evidence/project-2-completion.md`](project-2-completion.md).

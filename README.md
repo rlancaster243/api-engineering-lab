@@ -22,15 +22,17 @@ Progress through the modules in order; each phase builds on the verification dis
 
 ## Quick start (one module)
 
+Minimal smoke test only — for compose, migrations, signing keys, and full verification see **[Lab walkthrough](docs/LAB_WALKTHROUGH.md)**.
+
 ```bash
 cd 01-rest-api
-cp .env.example .env   # edit DATABASE_URL if needed
-uv sync --extra dev    # or: pip install -e ".[dev]"
+cp .env.example .env   # edit DATABASE_URL if needed; set CURSOR_SIGNING_KEY (32+ bytes) for full API
+uv sync --locked --extra dev
 uv run uvicorn app.main:app --reload --port 8001
 curl http://127.0.0.1:8001/health
 ```
 
-Run lint and tests:
+Lint and a quick test pass (integration tests need PostgreSQL — see walkthrough):
 
 ```bash
 uv run ruff check .
@@ -42,21 +44,29 @@ Use ports `8001`, `8002`, and `8003` when running multiple modules side by side.
 
 ## Run CI locally
 
-From the repository root, exercise the same checks as GitHub Actions:
+GitHub Actions runs **locked** `uv sync`, Ruff, and **postgres integration** jobs for Projects 1 and 2 (`REQUIRE_DATABASE=1`). The matrix jobs alone do not substitute for those integration runs.
+
+**Canonical full-lab verification** (all three modules, matching CI discipline) is in [`docs/LAB_WALKTHROUGH.md`](docs/LAB_WALKTHROUGH.md) under **Full verification (all modules)**. Start both compose stacks before Project 1 and 2 tests.
+
+Condensed from the walkthrough:
 
 ```bash
 for dir in 01-rest-api 02-async-job-api 03-api-hardening; do
   echo "=== $dir ==="
-  (cd "$dir" && pip install -e ".[dev]" && ruff check . && ruff format --check . && pytest -q)
-done
-```
-
-With **uv**:
-
-```bash
-for dir in 01-rest-api 02-async-job-api 03-api-hardening; do
-  echo "=== $dir ==="
-  (cd "$dir" && uv sync --extra dev && uv run ruff check . && uv run ruff format --check . && uv run pytest -q)
+  (
+    cd "$dir" || exit 1
+    uv sync --locked --extra dev
+    uv run ruff check . && uv run ruff format --check .
+    if [ "$dir" = "01-rest-api" ]; then
+      export TEST_DATABASE_URL="${TEST_DATABASE_URL:-postgresql://postgres:postgres@localhost:5432/rest_api_lab_test}"
+      REQUIRE_DATABASE=1 uv run pytest -q
+    elif [ "$dir" = "02-async-job-api" ]; then
+      export TEST_DATABASE_URL="${TEST_DATABASE_URL:-postgresql://postgres:postgres@localhost:5433/async_job_api_lab}"
+      REQUIRE_DATABASE=1 uv run pytest -q
+    else
+      uv run pytest -q
+    fi
+  )
 done
 ```
 
