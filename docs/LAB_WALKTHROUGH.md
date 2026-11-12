@@ -1,8 +1,9 @@
 # API Engineering Lab — portfolio walkthrough
 
-This page is the interview-oriented map of the repository. It synthesizes the three
-completion records and the syllabus exit condition; the authoritative detail lives in
-[`evidence/`](evidence/) and [`decisions/`](decisions/).
+This page is the interview-oriented map of the repository. **All three lab phases are
+complete on `main`.** It synthesizes the three completion records and the syllabus exit
+condition; the authoritative detail lives in [`evidence/`](evidence/) and
+[`decisions/`](decisions/).
 
 ## What the three projects demonstrate
 

@@ -1,7 +1,7 @@
 # API Engineering Lab — Action Syllabus
 
 **Version:** 1.0  
-**Status:** Active implementation plan  
+**Status:** Complete — historical plan of record (all phases landed on `main`)  
 **Repository:** [rlancaster243/api-engineering-lab](https://github.com/rlancaster243/api-engineering-lab)  
 **Visibility:** Public ([Apache-2.0](../LICENSE))  
 **Primary stack:** Python 3.12+, FastAPI, PostgreSQL, SQLAlchemy, Alembic, Pydantic, pytest, GitHub Actions  
@@ -47,7 +47,7 @@ api-engineering-lab/
 
 **Branch policy:** `main` is authoritative; implement changes on short-lived `feature/*` or `fix/*` branches, validate with pull-request CI, then merge. A staging **environment** may be introduced later without adding a permanent staging **branch**.
 
-**Documentation alignment [RESOLVED]:** Root `README.md` and `01-rest-api/README.md` have been aligned with this syllabus so ownership enforcement and authentication live in **Project 1B** (`01-rest-api/`), prior to `02-async-job-api/`, and Phase 3 (`03-api-hardening/`) focuses on defect investigation and repair.
+**Documentation alignment [RESOLVED]:** Root `README.md` and module READMEs match this syllabus: ownership enforcement and authentication live in **Project 1B** (`01-rest-api/`); **Project 2** is the async job API; **Project 3** (`03-api-hardening/`) delivered investigation and repair on an authorized lab reproduction ([completion record](evidence/project-3-completion.md)).
 
 ## 3. Project sequence
 
