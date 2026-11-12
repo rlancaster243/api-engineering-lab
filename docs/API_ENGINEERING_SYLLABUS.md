@@ -3,7 +3,7 @@
 **Version:** 1.0  
 **Status:** Active implementation plan  
 **Repository:** [rlancaster243/api-engineering-lab](https://github.com/rlancaster243/api-engineering-lab)  
-**Visibility:** Private  
+**Visibility:** Public ([Apache-2.0](../LICENSE))  
 **Primary stack:** Python 3.12+, FastAPI, PostgreSQL, SQLAlchemy, Alembic, Pydantic, pytest, GitHub Actions  
 **Planning horizon:** Eight weeks, approximately 6–8 focused hours per week
 
