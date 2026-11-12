@@ -6,6 +6,9 @@
 2. **Project 1A (Persistence):** Saved Content CRUD (`/v1/items`), PostgreSQL + SQLAlchemy + Alembic migrations, and the stable `UNIQUE(user_id, content_id)` ownership grain using a deterministic seeded development user.
 3. **Project 1B (Auth & Ownership):** Authenticated caller principal resolution and strict two-user isolation across read, list, update, and delete operations without changing the Project 1A data grain.
 
+**Project 1 is complete on `main`** through PR-08 (Gate E `/ready`). Completion record:
+[`docs/evidence/project-1-completion.md`](../docs/evidence/project-1-completion.md).
+
 See [`../docs/API_ENGINEERING_SYLLABUS.md`](../docs/API_ENGINEERING_SYLLABUS.md) and [ADR 0002](../docs/decisions/0002-saved-item-ownership-grain.md) for full details.
 
 ## Tech stack

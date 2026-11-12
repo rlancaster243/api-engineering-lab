@@ -1,12 +1,11 @@
 # 03 — API hardening: the asset registry
 
-A small multi-tenant asset registry, written for Phase 3. It is a real service rather
+A small multi-tenant asset registry from Phase 3 of the lab. It is a real service rather
 than a scaffold: every endpoint below is backed by SQLite through the stdlib `sqlite3`
 module, and the test suite runs against a real database file, not a stub.
 
-The module exists to be investigated. A hardening review starts from a report about
-behaviour, not from a list of known defects, so this service is a working product whose
-behaviour can be probed, traced and changed like any other.
+**Project 3 is complete on `main`** through the investigation PRs and [#28](https://github.com/rlancaster243/api-engineering-lab/pull/28) (53 tests, zero skips). The service was written to be investigated: defects were seeded for a blind hardening exercise and are now closed (see **Fixed** below). Completion record:
+[`docs/evidence/project-3-completion.md`](../docs/evidence/project-3-completion.md).
 
 ## Product surface
 

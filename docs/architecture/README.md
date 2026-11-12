@@ -2,7 +2,7 @@
 
 ## Overview
 
-`api-engineering-lab` is a **multi-project repository** (not a shared Python package). Three FastAPI applications live in sibling directories and evolve along a single learning path.
+`api-engineering-lab` is a **multi-project repository** (not a shared Python package). Three FastAPI applications live in sibling directories along a single learning path; **all three phases are complete on `main`** (see [Lab walkthrough](../LAB_WALKTHROUGH.md)).
 
 ```
 api-engineering-lab/
